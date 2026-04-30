@@ -36,8 +36,9 @@ class _PaymentScreenState extends State<PaymentScreen> {
   static const Color _brand = Color(0xFF9F342C);
   static const Color _canvas = Color(0xFFF6F1EA);
   static const int _failAutoCloseSeconds = 3;
+  static const int _paymentTimeoutSeconds = 300;
 
-  int _remainingSeconds = 250;
+  int _remainingSeconds = _paymentTimeoutSeconds;
   int _failSeconds = _failAutoCloseSeconds;
   double _failProgress = 1.0;
   double _failProgressTarget = 1.0;
@@ -687,101 +688,110 @@ class _PaymentScreenState extends State<PaymentScreen> {
     final amountLabel =
         "₹${(_payableAmount ?? widget.totalAmount.toDouble()).toStringAsFixed(2)}";
 
-    return Scaffold(
-      backgroundColor: _canvas,
-      body: Stack(
-        children: [
-          const Positioned.fill(
-            child: DecoratedBox(
-              decoration: BoxDecoration(
-                gradient: LinearGradient(
-                  colors: [
-                    Color(0xFFF8F2EA),
-                    Color(0xFFF0E7DC),
-                    Color(0xFFEDE6DE)
-                  ],
-                  begin: Alignment.topLeft,
-                  end: Alignment.bottomRight,
+    return PopScope(
+      canPop: false,
+      onPopInvoked: (didPop) {
+        if (!didPop) {
+          _showCancelConfirmation(isStartAgain: false);
+        }
+      },
+      child: Scaffold(
+        backgroundColor: _canvas,
+        body: Stack(
+          children: [
+            const Positioned.fill(
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    colors: [
+                      Color(0xFFF8F2EA),
+                      Color(0xFFF0E7DC),
+                      Color(0xFFEDE6DE)
+                    ],
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                  ),
                 ),
               ),
             ),
-          ),
-          Positioned(
-            top: -120,
-            right: -60,
-            child: Container(
-              width: 260,
-              height: 260,
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                color: const Color(0xFFD97C59).withOpacity(0.12),
+            Positioned(
+              top: -120,
+              right: -60,
+              child: Container(
+                width: 260,
+                height: 260,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: const Color(0xFFD97C59).withOpacity(0.12),
+                ),
               ),
             ),
-          ),
-          Positioned(
-            top: 180,
-            left: -90,
-            child: Container(
-              width: 220,
-              height: 220,
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                color: const Color(0xFFB1493C).withOpacity(0.08),
+            Positioned(
+              top: 180,
+              left: -90,
+              child: Container(
+                width: 220,
+                height: 220,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: const Color(0xFFB1493C).withOpacity(0.08),
+                ),
               ),
             ),
-          ),
-          Positioned(
-            bottom: -80,
-            right: -50,
-            child: Container(
-              width: 240,
-              height: 240,
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                color: const Color(0xFFC7B39E).withOpacity(0.18),
+            Positioned(
+              bottom: -80,
+              right: -50,
+              child: Container(
+                width: 240,
+                height: 240,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: const Color(0xFFC7B39E).withOpacity(0.18),
+                ),
               ),
             ),
-          ),
-          SafeArea(
-            child: _loading
-                ? _WebPaymentLoading(
-                    onCancel: () => _showCancelConfirmation(isStartAgain: true),
-                  )
-                : _WebPaymentLayout(
-                    remainingSeconds: _remainingSeconds,
-                    restaurantName: _displayRestaurantName,
-                    amountLabel: amountLabel,
-                    viewportHeight: MediaQuery.sizeOf(context).height,
-                    paymentQrData: _qrData,
-                    paymentHint: _waitingForPaymentCompletion
-                        ? "Complete payment in $_selectedPaymentLabel. After payment, the scan-to-print screen will open automatically."
-                        : "For testing, scan the QR below to pay, or choose any UPI app below.",
-                    onGooglePay: () => _handlePayNow(_WebUpiApp.googlePay),
-                    onPhonePe: () => _handlePayNow(_WebUpiApp.phonePe),
-                    onPaytm: () => _handlePayNow(_WebUpiApp.paytm),
-                    onOtherUpi: () => _handlePayNow(_WebUpiApp.generic),
-                    onCancel: () =>
-                        _showCancelConfirmation(isStartAgain: false),
-                    onStartAgain: () =>
-                        _showCancelConfirmation(isStartAgain: true),
-                  ),
-          ),
-          if (_errorMessage != null)
-            _WebPaymentErrorOverlay(
-              message: _errorMessage!,
-              seconds: _failSeconds,
-              progress: _failProgress,
-              targetProgress: _failProgressTarget,
-              onProgressEnd: () {
-                if (!mounted) return;
-                if (_failProgress != _failProgressTarget) {
-                  setState(() {
-                    _failProgress = _failProgressTarget;
-                  });
-                }
-              },
+            SafeArea(
+              child: _loading
+                  ? _WebPaymentLoading(
+                      onCancel: () =>
+                          _showCancelConfirmation(isStartAgain: true),
+                    )
+                  : _WebPaymentLayout(
+                      remainingSeconds: _remainingSeconds,
+                      restaurantName: _displayRestaurantName,
+                      amountLabel: amountLabel,
+                      viewportHeight: MediaQuery.sizeOf(context).height,
+                      paymentQrData: _qrData,
+                      paymentHint: _waitingForPaymentCompletion
+                          ? "Complete payment in $_selectedPaymentLabel. After payment, the scan-to-print screen will open automatically."
+                          : "For testing, scan the QR below to pay, or choose any UPI app below.",
+                      onGooglePay: () => _handlePayNow(_WebUpiApp.googlePay),
+                      onPhonePe: () => _handlePayNow(_WebUpiApp.phonePe),
+                      onPaytm: () => _handlePayNow(_WebUpiApp.paytm),
+                      onOtherUpi: () => _handlePayNow(_WebUpiApp.generic),
+                      onCancel: () =>
+                          _showCancelConfirmation(isStartAgain: false),
+                      onStartAgain: () =>
+                          _showCancelConfirmation(isStartAgain: true),
+                    ),
             ),
-        ],
+            if (_errorMessage != null)
+              _WebPaymentErrorOverlay(
+                message: _errorMessage!,
+                seconds: _failSeconds,
+                progress: _failProgress,
+                targetProgress: _failProgressTarget,
+                onProgressEnd: () {
+                  if (!mounted) return;
+                  if (_failProgress != _failProgressTarget) {
+                    setState(() {
+                      _failProgress = _failProgressTarget;
+                    });
+                  }
+                },
+              ),
+          ],
+        ),
       ),
     );
   }

@@ -7,6 +7,13 @@ import android.os.Handler
 import android.os.Looper
 
 class BootReceiver : BroadcastReceiver() {
+    private val launchFlags =
+        Intent.FLAG_ACTIVITY_NEW_TASK or
+            Intent.FLAG_ACTIVITY_CLEAR_TOP or
+            Intent.FLAG_ACTIVITY_SINGLE_TOP or
+            Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or
+            Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED
+
     private fun shouldLaunch(action: String?): Boolean {
         return action == Intent.ACTION_BOOT_COMPLETED ||
             action == Intent.ACTION_LOCKED_BOOT_COMPLETED ||
@@ -22,25 +29,24 @@ class BootReceiver : BroadcastReceiver() {
         val pendingResult = goAsync()
         Handler(Looper.getMainLooper()).postDelayed({
             try {
+                NativeLogStore.append(
+                    context.applicationContext,
+                    "[BOOT] launching app from ${intent.action}"
+                )
                 val launchIntent = context.packageManager
                     .getLaunchIntentForPackage(context.packageName)
                     ?.apply {
-                        addFlags(
-                            Intent.FLAG_ACTIVITY_NEW_TASK or
-                                Intent.FLAG_ACTIVITY_CLEAR_TOP or
-                                Intent.FLAG_ACTIVITY_SINGLE_TOP
-                        )
+                        addFlags(launchFlags)
                     }
                     ?: Intent(context, MainActivity::class.java).apply {
-                        addFlags(
-                            Intent.FLAG_ACTIVITY_NEW_TASK or
-                                Intent.FLAG_ACTIVITY_CLEAR_TOP or
-                                Intent.FLAG_ACTIVITY_SINGLE_TOP
-                        )
+                        addFlags(launchFlags)
                     }
                 context.startActivity(launchIntent)
-            } catch (_: Exception) {
-                // Ignore launch failures; device may still be locked.
+            } catch (e: Exception) {
+                NativeLogStore.append(
+                    context.applicationContext,
+                    "[BOOT] launch failed from ${intent.action}: ${e.message}"
+                )
             } finally {
                 pendingResult.finish()
             }
