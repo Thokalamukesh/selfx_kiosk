@@ -34,8 +34,9 @@ class _PaymentScreenState extends State<PaymentScreen>
     with WidgetsBindingObserver {
   static const Color kPrimaryOrange = Color(0xFFFF5722);
   static const Color kBgGrey = Color(0xFFF1F3F6);
+  static const int _paymentTimeoutSeconds = 300;
 
-  int _remainingSeconds = 250;
+  int _remainingSeconds = _paymentTimeoutSeconds;
   Timer? countdownTimer;
   static const int _failAutoCloseSeconds = 3;
   int _failSeconds = _failAutoCloseSeconds;
@@ -530,29 +531,37 @@ class _PaymentScreenState extends State<PaymentScreen>
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: kBgGrey,
-      appBar: _buildAppBar(),
-      body: Stack(
-        children: [
-          loading
-              ? const Center(
-                  child: CircularProgressIndicator(color: kPrimaryOrange),
-                )
-              : Column(
-                  children: [
-                    _buildTimerHeader(),
-                    Expanded(
-                      child: SingleChildScrollView(
-                        padding: const EdgeInsets.symmetric(horizontal: 16),
-                        child: _buildPaymentCard(),
+    return PopScope(
+      canPop: false,
+      onPopInvoked: (didPop) {
+        if (!didPop) {
+          _showCancelConfirmation(context, isStartAgain: false);
+        }
+      },
+      child: Scaffold(
+        backgroundColor: kBgGrey,
+        appBar: _buildAppBar(),
+        body: Stack(
+          children: [
+            loading
+                ? const Center(
+                    child: CircularProgressIndicator(color: kPrimaryOrange),
+                  )
+                : Column(
+                    children: [
+                      _buildTimerHeader(),
+                      Expanded(
+                        child: SingleChildScrollView(
+                          padding: const EdgeInsets.symmetric(horizontal: 16),
+                          child: _buildPaymentCard(),
+                        ),
                       ),
-                    ),
-                    _buildBottomAction(),
-                  ],
-                ),
-          if (errorMessage != null) _buildErrorOverlay(),
-        ],
+                      _buildBottomAction(),
+                    ],
+                  ),
+            if (errorMessage != null) _buildErrorOverlay(),
+          ],
+        ),
       ),
     );
   }
