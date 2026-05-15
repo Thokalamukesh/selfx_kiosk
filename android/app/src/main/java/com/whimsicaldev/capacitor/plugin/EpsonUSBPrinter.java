@@ -1,7 +1,5 @@
 package com.whimsicaldev.capacitor.plugin;
 
-import java.io.ByteArrayOutputStream;
-import java.nio.charset.Charset;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -25,8 +23,6 @@ import org.json.JSONObject;
 
 public class EpsonUSBPrinter {
     private static final String TAG = "EpsonUSBPrinter";
-    private static final Charset PRINTER_CHARSET = Charset.forName("GBK");
-    private static final int PRINT_WIDTH = 32;
     private final Context context;
     private final String actionString;
     private final UsbManager manager;
@@ -260,23 +256,16 @@ public class EpsonUSBPrinter {
 
     public void print(String printObject, int lineFeed, Integer deviceId, Integer vendorId, Integer productId) throws Exception {
         ensureConnected(deviceId, vendorId, productId);
-        this.mPos.POS_Reset();
 
-        writeRaw(new byte[]{0x1B, 0x40});
         JSONArray resObj = new JSONArray(printObject);
-        int maxNOrgx = maxNOrgx(resObj);
-        LineBuffer rowBuffer = new LineBuffer(PRINT_WIDTH);
         for (int i = 0; i < resObj.length(); i++) {
             JSONObject jsonobject = resObj.getJSONObject(i);
             String type = jsonobject.getString("type");
 
             switch (type) {
                 case "text":
-                    String text = jsonobject.optString("text", "");
-                    JSONObject options = jsonobject.optJSONObject("options");
-                    if (options == null) {
-                        options = new JSONObject();
-                    }
+                    String text = jsonobject.getString("text");
+                    JSONObject options = jsonobject.getJSONObject("options");
                     int align = options.has("align") ? options.getInt("align") : 0;
                     int nLan = options.has("nLan") ? options.getInt("nLan") : 0;
                     int nOrgx = options.has("nOrgx") ? options.getInt("nOrgx") : 0;
@@ -284,45 +273,30 @@ public class EpsonUSBPrinter {
                     int fontStyle = options.has("fontStyle") ? options.getInt("fontStyle") : 0;
                     int widthTimes = options.has("widthTimes") ? options.getInt("widthTimes") : 0;
                     int heightTimes = options.has("heightTimes") ? options.getInt("heightTimes") : 0;
-                    if (options.optBoolean("bold", false)) {
-                        fontStyle = 1;
+                    if (options.has("align")) {
+                        this.mPos.POS_S_Align(align);
                     }
-                    if ("lg".equalsIgnoreCase(options.optString("size", ""))) {
-                        widthTimes = Math.max(widthTimes, 1);
-                        heightTimes = Math.max(heightTimes, 1);
-                    }
-                    if (align == 0 && options.has("nOrgx") && maxNOrgx > 0) {
-                        rowBuffer.insert(mapOrgxToChar(nOrgx, maxNOrgx), oneLine(text));
-                        break;
-                    }
-                    flushRowBuffer(rowBuffer);
-                    printRawText(text, align, widthTimes, heightTimes, fontStyle);
+                    this.mPos.POS_TextOut(text, nLan, nOrgx, widthTimes, heightTimes, fontType, fontStyle);
                     break;
                 case "dottedLine":
-                    flushRowBuffer(rowBuffer);
-                    printRawText("--------------------------------", 0, 0, 0, 0);
+                    this.mPos.POS_TextOut("--------------------------------\r\n", 0, 0, 0, 0, 0, 0);
                     break;
                 case "feedLine":
-                    flushRowBuffer(rowBuffer);
-                    writeRaw("\r\n".getBytes(PRINTER_CHARSET));
+                    this.mPos.POS_FeedLine();
                     break;
                 case "halfCutPaper":
-                    flushRowBuffer(rowBuffer);
-                    writeRaw(new byte[]{0x1B, 0x64, 0x03, 0x1D, 0x56, 0x01});
+                    this.mPos.POS_HalfCutPaper();
                     break;
                 case "fullCutPaper":
-                    flushRowBuffer(rowBuffer);
-                    writeRaw(new byte[]{0x1B, 0x64, 0x03, 0x1D, 0x56, 0x00});
+                    this.mPos.POS_FullCutPaper();
                     break;
                 default:
-                    flushRowBuffer(rowBuffer);
                     break;
             }
         }
 
-        flushRowBuffer(rowBuffer);
         for (int i = 0; i < lineFeed; i++) {
-            writeRaw("\r\n".getBytes(PRINTER_CHARSET));
+            this.mPos.POS_FeedLine();
         }
         // List<EpsonUSBPrinterLineEntry> printObjectList = this.objectMapper.readValue(printObject, new TypeReference<>() {});
         // Toast.makeText(this.context, "Print started", Toast.LENGTH_LONG).show();
@@ -353,147 +327,5 @@ public class EpsonUSBPrinter {
         //     }
         // }
        // Toast.makeText(this.context, "Print Ended", Toast.LENGTH_LONG).show();
-    }
-
-    private void flushRowBuffer(LineBuffer rowBuffer) throws Exception {
-        if (!rowBuffer.hasContent()) {
-            return;
-        }
-        printRawText(rowBuffer.take(), 0, 0, 0, 0);
-    }
-
-    private void printRawText(String text, int align, int widthTimes, int heightTimes, int fontStyle) throws Exception {
-        ByteArrayOutputStream out = new ByteArrayOutputStream();
-
-        int safeAlign = align;
-        if (safeAlign < 0 || safeAlign > 2) {
-            safeAlign = 0;
-        }
-        out.write(new byte[]{0x1B, 0x61, (byte) safeAlign});
-
-        boolean bold = fontStyle > 0;
-        out.write(new byte[]{0x1B, 0x45, (byte) (bold ? 1 : 0)});
-
-        int width = widthTimes > 0 ? 1 : 0;
-        int height = heightTimes > 0 ? 1 : 0;
-        int size = (width << 4) | height;
-        out.write(new byte[]{0x1D, 0x21, (byte) size});
-
-        out.write(ensureLineEnding(text).getBytes(PRINTER_CHARSET));
-
-        out.write(new byte[]{0x1D, 0x21, 0x00});
-        out.write(new byte[]{0x1B, 0x45, 0x00});
-        out.write(new byte[]{0x1B, 0x61, 0x00});
-
-        writeRaw(out.toByteArray());
-    }
-
-    private void writeRaw(byte[] data) throws Exception {
-        if (data == null || data.length == 0) {
-            return;
-        }
-        int written = this.mPos.GetIO().Write(data, 0, data.length);
-        if (written < 0) {
-            throw new Exception("USB write failed");
-        }
-    }
-
-    private int maxNOrgx(JSONArray printObject) {
-        int max = 0;
-        for (int i = 0; i < printObject.length(); i++) {
-            JSONObject obj = printObject.optJSONObject(i);
-            if (obj == null || !"text".equals(obj.optString("type"))) {
-                continue;
-            }
-            JSONObject options = obj.optJSONObject("options");
-            if (options == null || !options.has("nOrgx")) {
-                continue;
-            }
-            int value = options.optInt("nOrgx", 0);
-            if (value > max) {
-                max = value;
-            }
-        }
-        return max;
-    }
-
-    private int mapOrgxToChar(int nOrgx, int maxNOrgx) {
-        if (maxNOrgx <= 0) {
-            return 0;
-        }
-        int scaled = Math.round((float) nOrgx * (PRINT_WIDTH - 1) / (float) maxNOrgx);
-        if (scaled < 0) {
-            return 0;
-        }
-        if (scaled >= PRINT_WIDTH) {
-            return PRINT_WIDTH - 1;
-        }
-        return scaled;
-    }
-
-    private String oneLine(String text) {
-        if (text == null) {
-            return "";
-        }
-        return text.replace("\r\n", " ").replace("\r", " ").replace("\n", " ").trim();
-    }
-
-    private String ensureLineEnding(String text) {
-        if (text == null || text.length() == 0) {
-            return "\r\n";
-        }
-
-        String normalized = text
-                .replace("₹", "Rs ")
-                .replace("\r\n", "\n")
-                .replace("\r", "\n");
-        if (!normalized.endsWith("\n")) {
-            normalized = normalized + "\n";
-        }
-        return normalized.replace("\n", "\r\n");
-    }
-
-    private static class LineBuffer {
-        private final char[] chars;
-        private boolean hasContent = false;
-
-        LineBuffer(int width) {
-            chars = new char[width];
-            reset();
-        }
-
-        boolean hasContent() {
-            return hasContent;
-        }
-
-        void insert(int position, String text) {
-            if (text == null || text.length() == 0) {
-                return;
-            }
-            int pos = Math.max(0, Math.min(position, chars.length - 1));
-            int available = chars.length - pos;
-            int len = Math.min(text.length(), available);
-            for (int i = 0; i < len; i++) {
-                chars[pos + i] = text.charAt(i);
-            }
-            hasContent = true;
-        }
-
-        String take() {
-            int end = chars.length;
-            while (end > 0 && chars[end - 1] == ' ') {
-                end--;
-            }
-            String value = new String(chars, 0, end);
-            reset();
-            return value;
-        }
-
-        private void reset() {
-            for (int i = 0; i < chars.length; i++) {
-                chars[i] = ' ';
-            }
-            hasContent = false;
-        }
     }
 }

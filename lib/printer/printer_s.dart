@@ -178,8 +178,13 @@ class PrinterService {
       throw Exception("Test print not supported for LAN printer");
     }
 
+    final testData = _buildCompactTestPrintObject(
+      restaurantName: restaurantName,
+      address: address,
+    );
+
     if (type == PrinterType.internal) {
-      await _sunmiTestPrint(restaurantName);
+      await _printWithSunmi(testData);
       return;
     }
 
@@ -188,14 +193,10 @@ class PrinterService {
       if (printer == null) {
         throw Exception("No USB printer selected");
       }
-      final sample = _usbService.samplePrintObject(
-        restaurantName: restaurantName,
-        address: address ?? "SELFX Kiosk",
-      );
+      final usbData = testData.map(_mapForUsb).toList();
       await _usbService.printData(
         printer: printer,
-        printObject: sample,
-        lineFeed: 0,
+        printObject: usbData,
       );
       return;
     }
@@ -221,17 +222,7 @@ class PrinterService {
     bool removeTaxLines = false,
     num? parcelTotalOverride,
   }) async {
-    if (kIsWeb) {
-      if (orderId > 0) {
-        await KioskApi().printReceipt(orderId);
-      }
-      return;
-    }
-
     final type = await _getPrinterType();
-    if (type == null) {
-      throw Exception("Printer type is not configured");
-    }
     final receiptMode = await ReceiptPrintMode.getStoredMode();
     final bool shouldForceLocal = forceLocal;
     final num parcelTotal =
@@ -305,9 +296,7 @@ class PrinterService {
     // ================= USB PRINTER =================
     if (type == PrinterType.usb) {
       final printer = await _resolveUsbPrinter(allowAutoSelect: true);
-      if (printer == null) {
-        throw Exception("No USB printer selected");
-      }
+      if (printer == null) return;
 
       // ---- Prefer backend (Angular behavior) ----
       if (!shouldForceLocal && orderId > 0) {
@@ -343,20 +332,13 @@ class PrinterService {
                 .toList();
           }
           if (printObjects.isNotEmpty) {
-            var printedBackendObject = false;
             for (final obj in printObjects) {
-              final usbObject = _prepareBackendPrintObjectForUsb(
-                obj,
-                removeTaxLines: removeTaxLines,
-              );
-              if (!_hasPrintableText(usbObject)) continue;
               await _usbService.printRawPrintObject(
                 printer: printer,
-                printObject: usbObject,
+                printObject: obj,
               );
-              printedBackendObject = true;
             }
-            if (printedBackendObject) return;
+            return;
           }
         } catch (e) {
           // Silent fallback to local builder
@@ -424,9 +406,7 @@ class PrinterService {
 
     if (type == PrinterType.usb) {
       final printer = await _resolveUsbPrinter(allowAutoSelect: true);
-      if (printer == null) {
-        throw Exception("No USB printer selected");
-      }
+      if (printer == null) return;
 
       final usbData = receiptData.map(_mapForUsb).toList();
 
@@ -628,53 +608,6 @@ class PrinterService {
     };
   }
 
-  List<dynamic> _prepareBackendPrintObjectForUsb(
-    List<dynamic> printObject, {
-    required bool removeTaxLines,
-  }) {
-    var prepared = _sanitizePrintObject(printObject);
-    if (removeTaxLines) {
-      prepared = _removeTaxLines(prepared);
-    }
-    return prepared.map((entry) {
-      if (entry is! Map) return entry;
-      final mapped = Map<String, dynamic>.from(entry);
-      if (mapped['type'] != 'text') return mapped;
-
-      final rawOptions = mapped['options'];
-      final options = rawOptions is Map
-          ? Map<String, dynamic>.from(rawOptions)
-          : <String, dynamic>{};
-      final size = options['size']?.toString();
-      mapped['options'] = {
-        'align': _toInt(options['align']) ?? 0,
-        'nLan': _toInt(options['nLan']) ?? 0,
-        'nOrgx': _toInt(options['nOrgx']) ?? 0,
-        'fontType': _toInt(options['fontType']) ?? 0,
-        'fontStyle':
-            (_toInt(options['fontStyle']) ?? 0) > 0 || options['bold'] == true
-                ? 1
-                : 0,
-        'widthTimes':
-            (_toInt(options['widthTimes']) ?? 0) > 0 || size == 'lg' ? 1 : 0,
-        'heightTimes':
-            (_toInt(options['heightTimes']) ?? 0) > 0 || size == 'lg' ? 1 : 0,
-      };
-      mapped['text'] = mapped['text']?.toString() ?? '';
-      return mapped;
-    }).toList();
-  }
-
-  bool _hasPrintableText(List<dynamic> printObject) {
-    for (final entry in printObject) {
-      if (entry is Map && entry['type'] == 'text') {
-        final text = entry['text']?.toString().trim() ?? '';
-        if (text.isNotEmpty) return true;
-      }
-    }
-    return false;
-  }
-
   Future<Map<String, dynamic>?> _getSelectedUsbPrinter() async {
     final prefs = await SharedPreferences.getInstance();
     final raw = prefs.getString(_usbPrinterConfigKey);
@@ -714,6 +647,55 @@ class PrinterService {
   }
 
   // ================= SUNMI =================
+  List<Map<String, dynamic>> _buildCompactTestPrintObject({
+    required String restaurantName,
+    String? address,
+  }) {
+    const int width = 32;
+    final now = DateTime.now();
+    final printedAt =
+        "${now.year}-${_two(now.month)}-${_two(now.day)} ${_two(now.hour)}:${_two(now.minute)}";
+    final lines = <Map<String, dynamic>>[];
+
+    void add(String text, {int align = 0, bool bold = false}) {
+      lines.add({
+        'type': 'text',
+        'text': text,
+        'options': {'align': align, 'bold': bold, 'size': 'md'},
+      });
+      lines.add({'type': 'feedLine'});
+    }
+
+    String center(String text) {
+      if (text.length >= width) return text;
+      final left = ((width - text.length) / 2).floor();
+      final right = width - text.length - left;
+      return (" " * left) + text + (" " * right);
+    }
+
+    String divider() => "-" * width;
+
+    final name =
+        restaurantName.trim().isEmpty ? "Restaurant" : restaurantName.trim();
+    for (final part in _wrap(name, width)) {
+      add(center(part), align: 1, bold: true);
+    }
+    if (address != null && address.trim().isNotEmpty) {
+      for (final part in _wrap(address.trim(), width).take(2)) {
+        add(center(part), align: 1);
+      }
+    }
+    add(divider());
+    add(center("TEST PRINT"), align: 1, bold: true);
+    add(center("Printer configured"), align: 1);
+    add(center(printedAt), align: 1);
+    add(divider());
+
+    lines.add({'type': 'feedLine'});
+    lines.add({'type': 'fullCutPaper'});
+    return lines;
+  }
+
   Future<void> _printWithSunmi(List<Map<String, dynamic>> printObject) async {
     await SunmiPrinter.bindingPrinter();
     await SunmiPrinter.initPrinter();

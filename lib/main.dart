@@ -4,7 +4,6 @@ import 'dart:ui';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:api_selfxo_project/core/kiosk_bootstrap.dart';
 import 'package:api_selfxo_project/printer/register_kiosk.dart';
 import 'package:api_selfxo_project/screens/register_screen.dart';
 import 'package:api_selfxo_project/screens/web_qr_menu_entry.dart';
@@ -50,12 +49,6 @@ Future<void> main() async {
     final prefs = await SharedPreferences.getInstance();
     final restaurantId = prefs.getString("restaurant_id");
     final setupDone = prefs.getBool("kiosk_setup_done") ?? false;
-    if (restaurantId != null && restaurantId.trim().isNotEmpty) {
-      try {
-        await DeviceBootstrap.ensureDeviceReady();
-      } catch (_) {}
-    }
-
     final Widget initialHome = kIsWeb
         ? _resolveInitialWebHome()
         : (restaurantId == null || restaurantId.trim().isEmpty)
@@ -135,10 +128,11 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
   bool _tickersEnabled = true;
   late final KioskWatchdog _watchdog;
   final FocusNode _appFocusNode = FocusNode(debugLabel: 'app-root');
+  DateTime _lastActivityResetAt = DateTime.fromMillisecondsSinceEpoch(0);
 
   static const bool _enableHeartbeatLogs = false;
-
   static const Duration _idleTimeout = Duration(minutes: 3);
+  static const Duration _activityThrottle = Duration(milliseconds: 250);
 
   @override
   void initState() {
@@ -220,30 +214,19 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
             focusNode: _appFocusNode,
             autofocus: true,
             onKeyEvent: (node, event) {
-              _resetIdleTimer();
-              _watchdog.reportUserActivity();
-              KioskMemoryService.instance.reportUserActivity();
+              _registerUserActivity(force: true, allowUnfocus: false);
               return KeyEventResult.ignored;
             },
             child: Listener(
               behavior: HitTestBehavior.translucent,
               onPointerDown: (_) {
-                _resetIdleTimer();
-                _watchdog.reportUserActivity();
-                KioskMemoryService.instance.reportUserActivity();
-                FocusManager.instance.primaryFocus?.unfocus();
+                _registerUserActivity(force: true);
               },
               onPointerMove: (_) {
-                _resetIdleTimer();
-                _watchdog.reportUserActivity();
-                KioskMemoryService.instance.reportUserActivity();
-                FocusManager.instance.primaryFocus?.unfocus();
+                _registerUserActivity();
               },
               onPointerSignal: (_) {
-                _resetIdleTimer();
-                _watchdog.reportUserActivity();
-                KioskMemoryService.instance.reportUserActivity();
-                FocusManager.instance.primaryFocus?.unfocus();
+                _registerUserActivity(force: true, allowUnfocus: false);
               },
               child: child ?? const SizedBox.shrink(),
             ),
@@ -389,6 +372,24 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
         ),
       ),
     );
+  }
+
+  void _registerUserActivity({
+    bool force = false,
+    bool allowUnfocus = true,
+  }) {
+    final now = DateTime.now();
+    if (!force &&
+        now.difference(_lastActivityResetAt) < _activityThrottle) {
+      return;
+    }
+    _lastActivityResetAt = now;
+    _resetIdleTimer();
+    _watchdog.reportUserActivity();
+    KioskMemoryService.instance.reportUserActivity();
+    if (allowUnfocus) {
+      FocusManager.instance.primaryFocus?.unfocus();
+    }
   }
 
   void _resetIdleTimer() {

@@ -442,7 +442,11 @@ class _HomePage2State extends State<HomePage2> with TickerProviderStateMixin {
       final productMaps = List<Map<String, dynamic>>.from(
         parsed["products"] ?? const [],
       );
-      _applyOverridesToProductMaps(productMaps);
+      final hiddenCategoryKeys = _hiddenCategoryKeys();
+      _applyOverridesToProductMaps(
+        productMaps,
+        hiddenCategoryKeys: hiddenCategoryKeys,
+      );
       final tempProducts = productMaps
           .map(
             (p) => ProductModel(
@@ -463,6 +467,7 @@ class _HomePage2State extends State<HomePage2> with TickerProviderStateMixin {
         final overrideCats = _productOverrides.values
             .map((o) => _categoryLabel(o["category_name"] ?? o["category"]))
             .where((o) => o.trim().isNotEmpty)
+            .where((o) => !hiddenCategoryKeys.contains(_categoryKey(o)))
             .toSet();
         for (final c in overrideCats) {
           if (!tempCategories.contains(c)) {
@@ -874,8 +879,48 @@ class _HomePage2State extends State<HomePage2> with TickerProviderStateMixin {
     }
   }
 
-  void _applyOverridesToProductMaps(List<Map<String, dynamic>> productMaps) {
-    if (_productOverrides.isEmpty) return;
+  String _categoryKey(dynamic raw) {
+    return _categoryLabel(raw, fallback: "").toLowerCase().trim();
+  }
+
+  bool _isCategoryEntryActive(Map? category) {
+    final raw =
+        category?["is_active"] ?? category?["isActive"] ?? category?["active"];
+    return raw == null || _debugIsTruthy(raw);
+  }
+
+  Set<String> _hiddenCategoryKeys() {
+    final hidden = <String>{};
+    for (final category in _rawProducts) {
+      if (category is! Map) continue;
+      final categoryMap = Map<String, dynamic>.from(category);
+      if (_isCategoryEntryActive(categoryMap)) continue;
+      final key = _categoryKey(
+        categoryMap["category_name"] ?? categoryMap["name"],
+      );
+      if (key.isNotEmpty) hidden.add(key);
+    }
+
+    for (final override in _categoryOverrides.values) {
+      if (_isCategoryEntryActive(override)) continue;
+      final key = _categoryKey(
+        override["category_name"] ?? override["name"] ?? override["category"],
+      );
+      if (key.isNotEmpty) hidden.add(key);
+    }
+    return hidden;
+  }
+
+  void _applyOverridesToProductMaps(
+    List<Map<String, dynamic>> productMaps, {
+    Set<String> hiddenCategoryKeys = const {},
+  }) {
+    if (_productOverrides.isEmpty) {
+      productMaps.removeWhere(
+        (p) => hiddenCategoryKeys.contains(_categoryKey(p["category"])),
+      );
+      return;
+    }
     final Set<int> seenIds = {};
     for (final p in productMaps) {
       final id = p["id"];
@@ -911,23 +956,29 @@ class _HomePage2State extends State<HomePage2> with TickerProviderStateMixin {
       }
     }
 
-    productMaps.removeWhere((p) => !_isProductEntryAvailable(p));
+    productMaps.removeWhere(
+      (p) =>
+          !_isProductEntryAvailable(p) ||
+          hiddenCategoryKeys.contains(_categoryKey(p["category"])),
+    );
 
     // Add missing items from overrides (newly created products)
     for (final entry in _productOverrides.entries) {
       if (seenIds.contains(entry.key)) continue;
       final o = entry.value;
       if (!_isProductEntryAvailable(o)) continue;
+      final categoryName = _categoryLabel(
+        o["category_name"] ?? o["category"],
+        fallback: "Others",
+      );
+      if (hiddenCategoryKeys.contains(_categoryKey(categoryName))) continue;
       final name = (o["item_name"] ?? o["name"] ?? "").toString();
       final price = o["price"] ?? o["item_price"] ?? 0;
       if (name.trim().isEmpty) continue;
       productMaps.add({
         "id": entry.key,
         "name": name,
-        "category": _categoryLabel(
-          o["category_name"] ?? o["category"],
-          fallback: "Others",
-        ),
+        "category": categoryName,
         "price": price,
         "image": normalizeImageUrlValue(o["item_photo_url"] ?? o["image"]),
         "type": o["type"],

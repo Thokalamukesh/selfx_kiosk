@@ -1,499 +1,341 @@
-import 'package:api_selfxo_project/api/admin_api.dart';
-import 'package:api_selfxo_project/api/kiosk_api.dart';
-import 'package:api_selfxo_project/background_image/background_image.dart';
-import 'package:api_selfxo_project/core/order_utils.dart';
-import 'package:api_selfxo_project/core/receipt_print_mode.dart';
-import 'package:api_selfxo_project/printer/epson_usb_printer_service.dart';
-import 'package:api_selfxo_project/printer/printer_s.dart';
-import 'package:api_selfxo_project/screens/register_screen_io.dart';
-import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
-import 'package:shared_preferences/shared_preferences.dart';
+import 'dart:convert';
 
-class RegisterKioskScreen extends StatefulWidget {
-  const RegisterKioskScreen({super.key});
+import 'package:api_selfxo_project/api/kiosk_api.dart';
+import 'package:api_selfxo_project/printer/epson_usb_printer_service.dart';
+import 'package:api_selfxo_project/background_image/background_image.dart';
+import 'package:api_selfxo_project/printer/register_kiosk.dart';
+import 'package:api_selfxo_project/core/connectivity_service.dart';
+import 'package:flutter/cupertino.dart';
+import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:dio/dio.dart';
+
+import '../services/auth_service.dart';
+
+class UserIdScreen extends StatefulWidget {
+  const UserIdScreen({super.key});
 
   @override
-  State<RegisterKioskScreen> createState() => _RegisterKioskScreenState();
+  State<UserIdScreen> createState() => _UserIdScreenState();
 }
 
-class _RegisterKioskScreenState extends State<RegisterKioskScreen> {
-  final PrinterService _printerService = PrinterService();
-  final EpsonUSBPrinterService _usbService = EpsonUSBPrinterService();
-  final TextEditingController _kioskNameCtrl = TextEditingController();
+class _UserIdScreenState extends State<UserIdScreen> {
+  final TextEditingController controller = TextEditingController();
+  final EpsonUSBPrinterService _usbPrinterService = EpsonUSBPrinterService();
 
-  bool isLoading = true;
-  bool _savingKioskName = false;
-  bool _finishing = false;
-  bool _active = true;
-
-  String restaurantName = "Restaurant";
-  String? restaurantAddress;
-  Map<String, dynamic>? _settingsData;
-
-  bool _hasUsableKioskSettings(Map<String, dynamic>? settings) {
-    final deviceId = settings?["device_id"]?.toString().trim() ?? "";
-    return deviceId.isNotEmpty;
-  }
-
-  Future<void> _redirectToRestaurantRegistration() async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.remove("auth_token");
-    if (!_active || !mounted) return;
-    Navigator.of(context).pushAndRemoveUntil(
-      MaterialPageRoute(builder: (_) => const UserIdScreen()),
-      (_) => false,
-    );
-  }
+  bool loading = false;
+  bool hasError = false;
 
   @override
   void initState() {
     super.initState();
-    _loadSettings();
+    _loadSavedRestaurantId();
+  }
+
+  Future<void> _loadSavedRestaurantId() async {
+    final prefs = await SharedPreferences.getInstance();
+    final savedRestaurantId = prefs.getString("restaurant_id")?.trim() ?? "";
+    if (!mounted || savedRestaurantId.isEmpty || controller.text.isNotEmpty) {
+      return;
+    }
+    controller.text = savedRestaurantId;
   }
 
   @override
   void dispose() {
-    _active = false;
-    _kioskNameCtrl.dispose();
+    controller.dispose();
     super.dispose();
   }
 
-  Future<void> _loadSettings() async {
+  Future<void> _submit() async {
+    if (loading) return;
+    final restaurantId = controller.text.trim();
+    if (restaurantId.isEmpty) {
+      _showError("Please enter a Restaurant ID");
+      return;
+    }
+
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString("restaurant_id", restaurantId);
+
+    if (!ConnectivityService.instance.isOnline.value) {
+      _showError("No internet connection");
+      return;
+    }
+
+    setState(() {
+      loading = true;
+      hasError = false;
+    });
+
     try {
-      final prefs = await SharedPreferences.getInstance();
-      final savedName = prefs.getString("kiosk_name");
-      final res = await AdminApi().getSettings();
-      final data = res.data ?? {};
-      final settings =
-          (data["settings"] as Map?)?.cast<String, dynamic>() ?? {};
-      final restaurant =
-          (data["restaurant"] as Map?)?.cast<String, dynamic>() ?? {};
+      final ok = await AuthService().initializeKiosk(force: true);
+      if (!ok) throw Exception("Registration failed");
 
-      await ReceiptPrintMode.storeFromMap(settings);
-      await ReceiptPrintMode.storeFromMap(restaurant);
-
-      if (!_hasUsableKioskSettings(settings)) {
-        await _redirectToRestaurantRegistration();
-        return;
+      final res = await KioskApi().getRestaurantData();
+      final data = res.data?["restaurant"];
+      final gst = data?["gst_number"] ??
+          data?["gstin"] ??
+          data?["tax_id"] ??
+          data?["taxId"] ??
+          data?["gst_no"] ??
+          data?["gst"];
+      if (gst != null && gst.toString().trim().isNotEmpty) {
+        await prefs.setString("gst_number", gst.toString().trim());
       }
 
       if (!mounted) return;
-      setState(() {
-        _settingsData = settings;
-        restaurantName = restaurant["name"] ?? "Restaurant";
-        restaurantAddress = restaurant["address"]?.toString();
-        _kioskNameCtrl.text = (savedName != null && savedName.trim().isNotEmpty)
-            ? savedName.trim()
-            : "";
-        isLoading = false;
-      });
-    } catch (_) {
-      try {
-        final prefs = await SharedPreferences.getInstance();
-        final savedName = prefs.getString("kiosk_name");
-        final res = await KioskApi().getRestaurantData();
-        final raw = res.data ?? {};
-        final restaurant =
-            (raw["restaurant"] as Map?)?.cast<String, dynamic>() ??
-                (raw as Map?)?.cast<String, dynamic>() ??
-                {};
-        final kioskSettings =
-            (raw["kiosk_settings"] as Map?)?.cast<String, dynamic>();
-        final branch = (raw["branch"] as Map?)?.cast<String, dynamic>();
 
-        await ReceiptPrintMode.storeFromMap(kioskSettings);
-        await ReceiptPrintMode.storeFromMap(restaurant);
+      await _handleUSBPrinterSelection();
 
-        final mergedSettings = <String, dynamic>{};
-        if (kioskSettings != null) {
-          mergedSettings.addAll(kioskSettings);
-        }
-        final branchId = mergedSettings["branch_id"] ?? branch?["id"];
-        if (branchId != null) mergedSettings["branch_id"] = branchId;
-        final restaurantId = mergedSettings["restaurant_id"] ??
-            restaurant["restaurant_id"] ??
-            restaurant["id"];
-        if (restaurantId != null) {
-          mergedSettings["restaurant_id"] = restaurantId;
-        }
-
-        if (!_hasUsableKioskSettings(
-            mergedSettings.isNotEmpty ? mergedSettings : kioskSettings)) {
-          await _redirectToRestaurantRegistration();
-          return;
-        }
-
-        if (!mounted) return;
-        setState(() {
-          _settingsData =
-              mergedSettings.isNotEmpty ? mergedSettings : kioskSettings;
-          restaurantName = restaurant["name"] ?? "Restaurant";
-          restaurantAddress = restaurant["address"]?.toString();
-          _kioskNameCtrl.text =
-              (savedName != null && savedName.trim().isNotEmpty)
-                  ? savedName.trim()
-                  : "";
-          isLoading = false;
-        });
-      } catch (_) {
-        if (!mounted) return;
-        setState(() {
-          restaurantName = "Restaurant";
-          restaurantAddress = null;
-          _kioskNameCtrl.text = "";
-          isLoading = false;
-        });
-      }
-    }
-  }
-
-  Future<void> _saveKioskName() async {
-    final name = _kioskNameCtrl.text.trim();
-    if (name.isEmpty) {
-      _showSnackBar("Enter device name", Colors.red);
-      return;
-    }
-    if (_savingKioskName) return;
-
-    setState(() => _savingKioskName = true);
-    try {
-      final body = <String, dynamic>{
-        "name": name,
-        "kiosk_name": name,
-        "device_name": name,
-      };
-      if (_settingsData != null) {
-        final branchId = _settingsData?["branch_id"];
-        final printerId = _settingsData?["printer_id"];
-        final deviceId = _settingsData?["device_id"];
-        final restaurantId = _settingsData?["restaurant_id"];
-        if (branchId != null) body["branch_id"] = branchId;
-        if (printerId != null) body["printer_id"] = printerId;
-        if (deviceId != null) body["device_id"] = deviceId;
-        if (restaurantId != null) body["restaurant_id"] = restaurantId;
-      }
-      await AdminApi().updateSettings(body);
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setString("kiosk_name", name);
-      _showSnackBar("Device name updated", Colors.green);
-      if (mounted) {
-        setState(() {
-          _settingsData ??= {};
-          _settingsData?["name"] = name;
-          _settingsData?["kiosk_name"] = name;
-          _settingsData?["device_name"] = name;
-        });
-      }
-      OrderUtils.notifyInfoUpdated();
-    } catch (_) {
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setString("kiosk_name", name);
-      _showSnackBar("Saved locally.", const Color(0xFF1B8E3E));
-      OrderUtils.notifyInfoUpdated();
-    } finally {
-      if (mounted) setState(() => _savingKioskName = false);
-    }
-  }
-
-  Future<void> _runTestPrint() async {
-    try {
-      await _printerService.testPrint(
-        restaurantName: restaurantName,
-        address: restaurantAddress,
-      );
-      _showSnackBar("Test print started", Colors.blue);
-    } on PlatformException catch (e) {
-      if (e.code == "USB_PERMISSION_REQUIRED") {
-        final printer = await _printerService.getSelectedUsbPrinter();
-        if (printer == null) {
-          _showSnackBar("No USB printer selected", Colors.red);
-          return;
-        }
-        final requested = await _usbService.requestUsbPermission(printer);
-        if (requested) {
-          await Future.delayed(const Duration(milliseconds: 600));
-          if (!_active || !mounted) return;
-          await _printerService.testPrint(
-            restaurantName: restaurantName,
-            address: restaurantAddress,
-          );
-        } else {
-          _showSnackBar("USB permission denied", Colors.red);
-        }
+      final setupDone = prefs.getBool("kiosk_setup_done") ?? false;
+      if (!mounted) return;
+      if (!setupDone) {
+        Navigator.pushReplacement(
+          context,
+          MaterialPageRoute(builder: (_) => const RegisterKioskScreen()),
+        );
       } else {
-        _showSnackBar(e.message ?? e.toString(), Colors.red);
+        Navigator.pushReplacement(
+          context,
+          MaterialPageRoute(builder: (_) => const WelcomeScreen()),
+        );
       }
-    } catch (e) {
-      _showSnackBar(e.toString(), Colors.red);
+    } on DioException catch (e) {
+      setState(() => hasError = true);
+      final data = e.response?.data;
+      String message = "Registration failed. Check ID and Internet.";
+      if (data is Map) {
+        final apiMessage =
+            data["message"] ?? data["error"] ?? data["errors"]?.toString();
+        if (apiMessage != null && apiMessage.toString().trim().isNotEmpty) {
+          message = apiMessage.toString();
+        }
+      }
+      _showError(message);
+    } catch (_) {
+      setState(() => hasError = true);
+      _showError("Registration failed. Check ID and Internet.");
+    } finally {
+      if (mounted) setState(() => loading = false);
     }
   }
 
-  Future<void> _finishSetup() async {
-    if (_finishing) return;
-    final name = _kioskNameCtrl.text.trim();
-    if (name.isEmpty) {
-      _showSnackBar("Enter device name", Colors.red);
-      return;
-    }
-
-    _finishing = true;
+  Future<void> _handleUSBPrinterSelection() async {
     try {
-      if (_savingKioskName) {
-        final end = DateTime.now().add(const Duration(seconds: 6));
-        while (_savingKioskName && DateTime.now().isBefore(end)) {
-          await Future.delayed(const Duration(milliseconds: 100));
-          if (!_active || !mounted) return;
-        }
-      }
-      if (!_savingKioskName) {
-        await _saveKioskName();
-      }
-      if (_savingKioskName) {
-        _showSnackBar("Please wait, saving...", Colors.orange);
+      final List<Map<String, dynamic>> printers =
+          await _usbPrinterService.getPrinterList();
+
+      if (printers.isEmpty) {
+        await _showNoPrinterDialog();
         return;
       }
 
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setBool("kiosk_setup_done", true);
+      Map<String, dynamic>? selectedPrinter;
+
       if (!mounted) return;
-      Navigator.pushReplacement(
-        context,
-        MaterialPageRoute(builder: (_) => const WelcomeScreen()),
+      await showDialog(
+        context: context,
+        barrierDismissible: false,
+        builder: (context) => AlertDialog(
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(20),
+          ),
+          title: const Text("USB Printer Detected"),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Text("Select the Epson printer for this Kiosk:"),
+              const SizedBox(height: 16),
+              SizedBox(
+                width: double.maxFinite,
+                child: ListView.builder(
+                  shrinkWrap: true,
+                  itemCount: printers.length,
+                  itemBuilder: (context, index) {
+                    final p = printers[index];
+                    return Card(
+                      color: Colors.grey.shade100,
+                      child: ListTile(
+                        leading: const Icon(Icons.usb, color: Colors.blue),
+                        title: Text(
+                          p["name"] ?? p["productName"] ?? "USB Printer",
+                        ),
+                        subtitle: Text(
+                          "Device: ${p["deviceId"] ?? "-"} • VID: ${p["vendorId"] ?? "-"} • PID: ${p["productId"] ?? "-"}",
+                        ),
+                        onTap: () {
+                          selectedPrinter = p;
+                          Navigator.pop(context);
+                        },
+                      ),
+                    );
+                  },
+                ),
+              ),
+            ],
+          ),
+        ),
       );
-    } finally {
-      _finishing = false;
-    }
+
+      if (selectedPrinter != null) {
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setString("printer_type", "usb");
+        await prefs.setString(
+          "selected_usb_printer",
+          jsonEncode(selectedPrinter),
+        );
+        await _usbPrinterService.setSelectedPrinter(selectedPrinter!);
+        await _usbPrinterService.scanAndConnect();
+
+        _showSuccessSnackBar(
+          "Printer Configured: ${selectedPrinter!["name"] ?? selectedPrinter!["productName"] ?? "USB Printer"}",
+        );
+      }
+    } catch (_) {}
   }
 
-  void _showSnackBar(String msg, Color color) {
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(SnackBar(content: Text(msg), backgroundColor: color));
+  Future<void> _showNoPrinterDialog() async {
+    await showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text("No Printer Found"),
+        content: const Text(
+          "Ensure your Epson USB printer is plugged in and turned on. You can configure this later in Settings.",
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text("OK"),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showError(String msg) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(msg), backgroundColor: Colors.red.shade800),
+    );
+  }
+
+  void _showSuccessSnackBar(String msg) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(msg), backgroundColor: Colors.green.shade800),
+    );
   }
 
   @override
   Widget build(BuildContext context) {
+    final isTablet = MediaQuery.of(context).size.width > 700;
     return Scaffold(
-      backgroundColor: const Color(0xFFF4F7F9),
+      backgroundColor: const Color(0xFFF6F6F6),
       appBar: AppBar(
         backgroundColor: const Color(0xFF9F342C),
         elevation: 0,
-        leadingWidth: 90,
-        leading: Padding(
-          padding: const EdgeInsets.only(left: 12),
-          child: Center(
-            child: Image.asset(
-              "assets/self.png",
-              height: 44,
-              fit: BoxFit.contain,
-            ),
+        centerTitle: true,
+        leadingWidth: isTablet ? 0 : 120,
+        leading: isTablet
+            ? null
+            : Padding(
+                padding: const EdgeInsets.only(left: 16),
+                child: Align(
+                  alignment: Alignment.centerLeft,
+                  child: Image.asset(
+                    "assets/self.png",
+                    height: 36,
+                    fit: BoxFit.contain,
+                  ),
+                ),
+              ),
+        title: const Text(
+          "Kiosk",
+          style: TextStyle(
+            fontWeight: FontWeight.w700,
+            fontSize: 28,
+            color: Color.fromARGB(255, 255, 255, 255),
           ),
         ),
-        title: const Text(
-          "Initial Setup",
-          style: TextStyle(fontWeight: FontWeight.bold, color: Colors.white),
-        ),
       ),
-      body: isLoading
-          ? const Center(child: CircularProgressIndicator())
-          : ListView(
-              padding: const EdgeInsets.fromLTRB(16, 24, 16, 24),
-              children: [
-                _sectionTitle("Restaurant Info"),
-                _card(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        restaurantName,
-                        style: const TextStyle(
-                          fontSize: 18,
-                          fontWeight: FontWeight.w800,
-                        ),
-                      ),
-                      if (restaurantAddress != null &&
-                          restaurantAddress!.trim().isNotEmpty) ...[
-                        const SizedBox(height: 6),
-                        Text(
-                          restaurantAddress!,
-                          style: TextStyle(
-                            fontSize: 14,
-                            color: Colors.grey.shade600,
-                          ),
-                        ),
-                      ],
-                    ],
+      body: Center(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.all(24),
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 480),
+            child: Container(
+              padding: const EdgeInsets.all(26),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(18),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withOpacity(0.08),
+                    blurRadius: 20,
+                    offset: const Offset(0, 10),
                   ),
-                ),
-                const SizedBox(height: 24),
-                _sectionTitle("Device Setup"),
-                _card(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Text(
-                        "Device Name",
-                        style: TextStyle(
-                          fontSize: 15,
-                          fontWeight: FontWeight.w700,
+                ],
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  if (isTablet) ...[
+                    Center(
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(24),
+                        child: Image.asset(
+                          "assets/selfxfavicon.jpg",
+                          width: 108,
+                          height: 108,
+                          fit: BoxFit.cover,
                         ),
-                      ),
-                      const SizedBox(height: 10),
-                      TextField(
-                        controller: _kioskNameCtrl,
-                        textAlign: TextAlign.center,
-                        style: const TextStyle(
-                          fontSize: 22,
-                          fontWeight: FontWeight.w600,
-                        ),
-                        decoration: const InputDecoration(
-                          hintText: "Enter device name",
-                          border: OutlineInputBorder(),
-                          contentPadding: EdgeInsets.symmetric(vertical: 16),
-                        ),
-                      ),
-                      const SizedBox(height: 14),
-                      SizedBox(
-                        height: 48,
-                        width: double.infinity,
-                        child: ElevatedButton.icon(
-                          onPressed: _savingKioskName ? null : _saveKioskName,
-                          icon: _savingKioskName
-                              ? const SizedBox(
-                                  height: 18,
-                                  width: 18,
-                                  child: CircularProgressIndicator(
-                                    strokeWidth: 2,
-                                    color: Colors.white,
-                                  ),
-                                )
-                              : const Icon(
-                                  Icons.save_rounded,
-                                  color: Colors.white,
-                                ),
-                          label: const Text(
-                            "Save Device Name",
-                            style: TextStyle(
-                              fontWeight: FontWeight.bold,
-                              color: Colors.white,
-                            ),
-                          ),
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: const Color(0xFF9F342C),
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                const SizedBox(height: 24),
-                _sectionTitle("Printer Setup"),
-                _card(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Text(
-                        "Test Printer",
-                        style: TextStyle(
-                          fontSize: 15,
-                          fontWeight: FontWeight.w700,
-                        ),
-                      ),
-                      const SizedBox(height: 6),
-                      Text(
-                        "Print a sample receipt to verify the printer is connected correctly.",
-                        style: TextStyle(color: Colors.grey.shade600),
-                      ),
-                      const SizedBox(height: 14),
-                      SizedBox(
-                        height: 48,
-                        width: double.infinity,
-                        child: ElevatedButton.icon(
-                          onPressed: _runTestPrint,
-                          icon: const Icon(
-                            Icons.print_rounded,
-                            color: Colors.white,
-                          ),
-                          label: const Text(
-                            "Run Test Print",
-                            style: TextStyle(
-                              fontWeight: FontWeight.bold,
-                              color: Colors.white,
-                            ),
-                          ),
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: const Color(0xFF9F342C),
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                const SizedBox(height: 32),
-                SizedBox(
-                  height: 54,
-                  child: ElevatedButton(
-                    onPressed: _finishing ? null : _finishSetup,
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: const Color(0xFF1B8E3E),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(16),
                       ),
                     ),
-                    child: _finishing
-                        ? const SizedBox(
-                            height: 20,
-                            width: 20,
-                            child: CircularProgressIndicator(
-                              strokeWidth: 2,
-                              color: Colors.white,
-                            ),
-                          )
-                        : const Text(
-                            "Continue",
-                            style: TextStyle(
-                              fontWeight: FontWeight.bold,
-                              fontSize: 18,
-                              color: Colors.white,
-                            ),
-                          ),
+                    const SizedBox(height: 20),
+                  ],
+                  const Text(
+                    "Please Register kiosk with your Restaurant",
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      fontSize: 20,
+                      fontWeight: FontWeight.w700,
+                    ),
                   ),
-                ),
-              ],
+                  const SizedBox(height: 20),
+                  CupertinoTextField(
+                    controller: controller,
+                    placeholder: "Enter Restaurant ID",
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 14,
+                      vertical: 14,
+                    ),
+                  ),
+                  const SizedBox(height: 20),
+                  SizedBox(
+                    height: 48,
+                    child: ElevatedButton(
+                      onPressed: loading ? null : _submit,
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: const Color(0xFF9F342C),
+                        foregroundColor: Colors.white,
+                      ),
+                      child: loading
+                          ? const SizedBox(
+                              width: 20,
+                              height: 20,
+                              child: CircularProgressIndicator(
+                                strokeWidth: 2,
+                                color: Colors.white,
+                              ),
+                            )
+                          : const Text("Continue"),
+                    ),
+                  ),
+                ],
+              ),
             ),
-    );
-  }
-
-  Widget _sectionTitle(String title) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 8),
-      child: Text(
-        title,
-        style: TextStyle(
-          fontSize: 16,
-          fontWeight: FontWeight.w800,
-          color: Colors.grey.shade800,
+          ),
         ),
       ),
-    );
-  }
-
-  Widget _card({required Widget child}) {
-    return Container(
-      padding: const EdgeInsets.all(18),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(18),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withOpacity(0.05),
-            blurRadius: 12,
-            offset: const Offset(0, 6),
-          ),
-        ],
-      ),
-      child: child,
     );
   }
 }

@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:api_selfxo_project/core/image_url.dart';
 import 'package:api_selfxo_project/core/kiosk_config.dart';
 import 'package:api_selfxo_project/core/kiosk_memory_service.dart';
+import 'package:api_selfxo_project/widget/app_network_image.dart';
 import '../modules/product_model.dart';
 
 class BestSellingWidget extends StatefulWidget {
@@ -424,16 +425,15 @@ class _BestSellingWidgetState extends State<BestSellingWidget> {
               children: [
                 Positioned.fill(
                   child: imageUrl.isNotEmpty
-                      ? Image.network(
-                          imageUrl,
+                      ? AppNetworkImage(
                           key: ValueKey("best-selling-image-${p.id}"),
+                          url: imageUrl,
                           fit: BoxFit.cover,
                           alignment: Alignment.center,
-                          filterQuality: FilterQuality.low,
                           gaplessPlayback: true,
                           cacheWidth: cacheWidth,
                           cacheHeight: cacheHeight,
-                          errorBuilder: (_, __, ___) => Container(
+                          fallback: Container(
                             color: Colors.grey.shade200,
                             child: Icon(
                               Icons.fastfood,

@@ -23,8 +23,6 @@ class PaymentSuccessDialog extends StatefulWidget {
   final String? transactionId;
   final DateTime? orderDate;
   final String? orderType;
-  final bool autoPrint;
-  final String? debugSource;
 
   const PaymentSuccessDialog({
     super.key,
@@ -35,353 +33,7 @@ class PaymentSuccessDialog extends StatefulWidget {
     this.transactionId,
     this.orderDate,
     this.orderType,
-    this.autoPrint = true,
-    this.debugSource,
   });
-
-  static Future<void> printReceiptUsingTabletFlow({
-    required List<Map<String, dynamic>> cart,
-    required int orderNumber,
-    String? restaurantName,
-    String? transactionId,
-    DateTime? orderDate,
-    String? orderType,
-  }) async {
-    String? resolvedRestaurantName = restaurantName;
-    final prefs = await SharedPreferences.getInstance();
-    if (resolvedRestaurantName == null ||
-        resolvedRestaurantName.trim().isEmpty) {
-      resolvedRestaurantName = prefs.getString("restaurant_name");
-    }
-    resolvedRestaurantName ??= "OUR KITCHEN";
-    final taxId = prefs.getString("gst_number") ?? prefs.getString("tax_id");
-
-    String? resolvedTransactionId = transactionId;
-    DateTime? resolvedOrderDate = orderDate;
-    var printItems = cart;
-    String? resolvedPaymentMode = "PAID";
-    num? taxAmount;
-    num? discountAmount;
-    if (resolvedTransactionId == null || resolvedOrderDate == null) {
-      try {
-        final res = await KioskApi().getOrderDetails(orderNumber);
-        final raw = res.data;
-        final backendItems = _extractOrderItemsFromPayload(raw);
-        if (backendItems.isNotEmpty) {
-          printItems = backendItems;
-        }
-        resolvedTransactionId ??= _findTxnIdInPayload(raw);
-        resolvedOrderDate ??= _parseOrderDateFromPayload(raw);
-        resolvedPaymentMode = _findStringInPayload(raw, const [
-              "payment_mode",
-              "paymentMode",
-              "payment_method",
-              "paymentMethod",
-            ]) ??
-            resolvedPaymentMode;
-        taxAmount = _findNumInPayload(raw, const [
-          "tax",
-          "tax_amount",
-          "gst",
-          "total_tax",
-        ]);
-        discountAmount = _findNumInPayload(raw, const [
-          "discount",
-          "discount_amount",
-        ]);
-      } catch (_) {}
-    }
-
-    await PrinterService().printOrder(
-      orderId: orderNumber,
-      cartItems: printItems,
-      restaurantName: resolvedRestaurantName,
-      taxId: taxId,
-      paymentMode: resolvedPaymentMode,
-      transactionId: resolvedTransactionId,
-      orderDate: resolvedOrderDate,
-      taxAmount: taxAmount,
-      discountAmount: discountAmount,
-      orderType: orderType,
-      forceLocal: true,
-      removeTaxLines: true,
-    );
-  }
-
-  static List<Map<String, dynamic>> _extractOrderItemsFromPayload(
-    dynamic data,
-  ) {
-    List<dynamic> raw = [];
-    if (data is Map) {
-      final candidates = [
-        data["order_items"],
-        data["items"],
-        data["orderItems"],
-        data["order_item_list"],
-        data["orderItemList"],
-        data["orderDetails"],
-        data["order_details"],
-        data["order"] is Map ? data["order"]["order_items"] : null,
-        data["data"] is Map ? data["data"]["order_items"] : null,
-        data["data"] is Map ? data["data"]["items"] : null,
-        data["data"] is Map && data["data"]["order"] is Map
-            ? data["data"]["order"]["order_items"]
-            : null,
-      ];
-      for (final c in candidates) {
-        if (c is List) {
-          raw = c;
-          break;
-        }
-        if (c is Map && c["data"] is List) {
-          raw = c["data"];
-          break;
-        }
-      }
-    }
-    raw = raw.isNotEmpty ? raw : (_findItemsList(data) ?? const []);
-
-    return raw.whereType<Map>().map((item) {
-      final menuItem = item["menu_item"] is Map
-          ? item["menu_item"] as Map
-          : item["menuItem"] is Map
-              ? item["menuItem"] as Map
-              : item["item"] is Map
-                  ? item["item"] as Map
-                  : item["product"] is Map
-                      ? item["product"] as Map
-                      : const {};
-      final pivot = item["pivot"] is Map ? item["pivot"] as Map : const {};
-      final qty = _asNum(
-        item["qty"] ??
-            item["quantity"] ??
-            item["count"] ??
-            pivot["quantity"] ??
-            1,
-      );
-      final safeQty = qty <= 0 ? 1 : qty;
-      var price = _asNum(
-        item["price"] ??
-            item["unit_price"] ??
-            item["unitPrice"] ??
-            item["item_price"] ??
-            item["rate"] ??
-            pivot["price"] ??
-            menuItem["price"] ??
-            0,
-      );
-      final amount = _asNum(
-        item["amount"] ??
-            item["total"] ??
-            item["total_amount"] ??
-            item["totalAmount"] ??
-            item["total_price"] ??
-            item["totalPrice"] ??
-            item["line_total"] ??
-            item["lineTotal"],
-      );
-      if (price <= 0 && amount > 0) {
-        price = amount / safeQty;
-      }
-
-      final name = _firstNonEmpty([
-        item["item_name"],
-        item["name"],
-        item["title"],
-        item["menu_item_name"],
-        item["menuItemName"],
-        item["product_name"],
-        item["productName"],
-        menuItem["item_name"],
-        menuItem["name"],
-        menuItem["title"],
-        menuItem["product_name"],
-      ], fallback: "Item");
-      final category = _firstNonEmpty([
-        item["category_name"],
-        item["category"],
-        menuItem["category_name"],
-        menuItem["category"],
-      ], fallback: "Items");
-      final image = item["item_photo_url"] ??
-          item["image_url"] ??
-          item["image"] ??
-          menuItem["item_photo_url"] ??
-          menuItem["image_url"] ??
-          menuItem["image"];
-      return {
-        "qty": safeQty,
-        "price": price,
-        "amount": amount > 0 ? amount : price * safeQty,
-        "name": name,
-        "category": category,
-        "image": image?.toString(),
-      };
-    }).toList();
-  }
-
-  static List<dynamic>? _findItemsList(dynamic value) {
-    if (value is Map) {
-      for (final entry in value.entries) {
-        final key = entry.key.toString().toLowerCase();
-        final v = entry.value;
-        if (v is List &&
-            (key.contains("item") ||
-                key.contains("detail") ||
-                key.contains("order"))) {
-          return v;
-        }
-        final nested = _findItemsList(v);
-        if (nested != null) return nested;
-      }
-    } else if (value is List) {
-      for (final item in value) {
-        final nested = _findItemsList(item);
-        if (nested != null) return nested;
-      }
-    }
-    return null;
-  }
-
-  static String? _findTxnIdInPayload(dynamic value) {
-    const keys = [
-      "transaction_id",
-      "payment_id",
-      "txn_id",
-      "transactionId",
-      "paymentId",
-      "razorpay_payment_id",
-      "payment_reference",
-      "payment_txn_id",
-      "txnid",
-      "txnId",
-    ];
-
-    if (value is Map) {
-      for (final k in keys) {
-        if (value.containsKey(k) && value[k] != null) {
-          final v = value[k].toString().trim();
-          if (v.isNotEmpty) return v;
-        }
-      }
-      for (final entry in value.entries) {
-        final found = _findTxnIdInPayload(entry.value);
-        if (found != null) return found;
-      }
-    } else if (value is List) {
-      for (final item in value) {
-        final found = _findTxnIdInPayload(item);
-        if (found != null) return found;
-      }
-    }
-    return null;
-  }
-
-  static String? _findStringInPayload(dynamic value, List<String> keys) {
-    if (value is Map) {
-      for (final k in keys) {
-        final v = value[k];
-        if (v != null && v.toString().trim().isNotEmpty) {
-          return v.toString().trim();
-        }
-      }
-      for (final entry in value.entries) {
-        final found = _findStringInPayload(entry.value, keys);
-        if (found != null) return found;
-      }
-    } else if (value is List) {
-      for (final item in value) {
-        final found = _findStringInPayload(item, keys);
-        if (found != null) return found;
-      }
-    }
-    return null;
-  }
-
-  static num? _findNumInPayload(dynamic value, List<String> keys) {
-    if (value is Map) {
-      for (final k in keys) {
-        final v = value[k];
-        if (v is num) return v;
-        final parsed = num.tryParse(v?.toString() ?? "");
-        if (parsed != null) return parsed;
-      }
-      for (final entry in value.entries) {
-        final found = _findNumInPayload(entry.value, keys);
-        if (found != null) return found;
-      }
-    } else if (value is List) {
-      for (final item in value) {
-        final found = _findNumInPayload(item, keys);
-        if (found != null) return found;
-      }
-    }
-    return null;
-  }
-
-  static num _asNum(dynamic v) {
-    if (v is num) return v;
-    return num.tryParse(v?.toString() ?? "") ?? 0;
-  }
-
-  static String _firstNonEmpty(
-    List<dynamic> values, {
-    required String fallback,
-  }) {
-    for (final value in values) {
-      final text = value?.toString().trim() ?? "";
-      if (text.isNotEmpty) return text;
-    }
-    return fallback;
-  }
-
-  static DateTime? _parseOrderDateFromPayload(dynamic value) {
-    final keys = [
-      "created_at",
-      "order_date",
-      "date",
-      "createdAt",
-      "placed_at",
-      "order_time",
-    ];
-    if (value is Map) {
-      for (final k in keys) {
-        final parsed = _parseDateValueFromPayload(value[k]);
-        if (parsed != null) return parsed;
-      }
-      for (final entry in value.entries) {
-        final parsed = _parseOrderDateFromPayload(entry.value);
-        if (parsed != null) return parsed;
-      }
-    } else if (value is List) {
-      for (final item in value) {
-        final parsed = _parseOrderDateFromPayload(item);
-        if (parsed != null) return parsed;
-      }
-    }
-    return null;
-  }
-
-  static DateTime? _parseDateValueFromPayload(dynamic v) {
-    if (v == null) return null;
-    try {
-      if (v is int) {
-        return v > 1000000000000
-            ? DateTime.fromMillisecondsSinceEpoch(v)
-            : DateTime.fromMillisecondsSinceEpoch(v * 1000);
-      }
-      if (v is num) {
-        final i = v.toInt();
-        return i > 1000000000000
-            ? DateTime.fromMillisecondsSinceEpoch(i)
-            : DateTime.fromMillisecondsSinceEpoch(i * 1000);
-      }
-      if (v is String && v.trim().isNotEmpty) {
-        return DateTime.tryParse(v.trim());
-      }
-    } catch (_) {}
-    return null;
-  }
 
   @override
   State<PaymentSuccessDialog> createState() => _PaymentSuccessDialogState();
@@ -418,6 +70,7 @@ class _PaymentSuccessDialogState extends State<PaymentSuccessDialog>
   static const MethodChannel _usbEvents = MethodChannel(
     'com.whimsicaldev/usb_events',
   );
+  final PrinterService _printerService = PrinterService();
 
   int get totalAmount => widget.cart.fold(
         0,
@@ -499,16 +152,7 @@ class _PaymentSuccessDialogState extends State<PaymentSuccessDialog>
     );
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (widget.autoPrint) {
-        _handlePrintingProcess();
-      } else {
-        setState(() {
-          printerStatus = PrinterStatus.success;
-          printerStatusMessage = "Print successful";
-          _printStatusText = "Print successful";
-        });
-        _startAutoCloseTimer(seconds: 3);
-      }
+      _handlePrintingProcess();
     });
 
     _usbEvents.setMethodCallHandler((call) async {
@@ -546,13 +190,36 @@ class _PaymentSuccessDialogState extends State<PaymentSuccessDialog>
     }
 
     try {
-      await PaymentSuccessDialog.printReceiptUsingTabletFlow(
-        cart: widget.cart,
-        orderNumber: widget.orderNumber,
-        restaurantName: widget.restaurantName,
-        transactionId: widget.transactionId,
-        orderDate: widget.orderDate,
+      String? restaurantName = widget.restaurantName;
+      if (restaurantName == null || restaurantName.trim().isEmpty) {
+        final prefs = await SharedPreferences.getInstance();
+        restaurantName = prefs.getString("restaurant_name");
+      }
+      restaurantName ??= "OUR KITCHEN";
+      final prefs = await SharedPreferences.getInstance();
+      final taxId = prefs.getString("gst_number") ?? prefs.getString("tax_id");
+
+      String? transactionId = widget.transactionId;
+      DateTime? orderDate = widget.orderDate;
+      if (transactionId == null || orderDate == null) {
+        try {
+          final res = await KioskApi().getOrderDetails(widget.orderNumber);
+          final raw = res.data;
+          transactionId ??= _findTxnId(raw);
+          orderDate ??= _parseOrderDate(raw);
+        } catch (_) {}
+      }
+
+      await _printerService.printOrder(
+        orderId: widget.orderNumber,
+        cartItems: widget.cart,
+        restaurantName: restaurantName,
+        taxId: taxId,
+        paymentMode: "PAID",
+        transactionId: transactionId,
+        orderDate: orderDate,
         orderType: widget.orderType,
+        removeTaxLines: true,
       );
 
       if (!mounted) return;
@@ -607,6 +274,83 @@ class _PaymentSuccessDialogState extends State<PaymentSuccessDialog>
       category = "CATEGORY";
     }
     return [category, "COUNTER"];
+  }
+
+  String? _findTxnId(dynamic value) {
+    const keys = [
+      "transaction_id",
+      "payment_id",
+      "txn_id",
+      "transactionId",
+      "paymentId",
+      "razorpay_payment_id",
+      "payment_reference",
+      "payment_txn_id",
+      "txnid",
+      "txnId",
+    ];
+
+    if (value is Map) {
+      for (final k in keys) {
+        if (value.containsKey(k) && value[k] != null) {
+          final v = value[k];
+          if (v.toString().trim().isNotEmpty) return v.toString().trim();
+        }
+      }
+      for (final entry in value.entries) {
+        final found = _findTxnId(entry.value);
+        if (found != null) return found;
+      }
+    } else if (value is List) {
+      for (final item in value) {
+        final found = _findTxnId(item);
+        if (found != null) return found;
+      }
+    }
+    return null;
+  }
+
+  DateTime? _parseOrderDate(dynamic value) {
+    final keys = [
+      "created_at",
+      "order_date",
+      "date",
+      "createdAt",
+      "placed_at",
+      "order_time",
+    ];
+    if (value is Map) {
+      for (final k in keys) {
+        final v = value[k];
+        final parsed = _parseDateValue(v);
+        if (parsed != null) return parsed;
+      }
+      for (final entry in value.entries) {
+        final parsed = _parseOrderDate(entry.value);
+        if (parsed != null) return parsed;
+      }
+    } else if (value is List) {
+      for (final item in value) {
+        final parsed = _parseOrderDate(item);
+        if (parsed != null) return parsed;
+      }
+    }
+    return null;
+  }
+
+  DateTime? _parseDateValue(dynamic v) {
+    if (v == null) return null;
+    try {
+      if (v is int) {
+        return v > 1000000000000
+            ? DateTime.fromMillisecondsSinceEpoch(v)
+            : DateTime.fromMillisecondsSinceEpoch(v * 1000);
+      }
+      if (v is String) {
+        return DateTime.tryParse(v);
+      }
+    } catch (_) {}
+    return null;
   }
 
   // ================= AUTO CLOSE =================
@@ -974,34 +718,6 @@ class _PaymentSuccessDialogState extends State<PaymentSuccessDialog>
                 ),
               ),
             ],
-            if ((widget.debugSource?.trim().isNotEmpty ?? false) ||
-                printerStatusMessage != null) ...[
-              const SizedBox(height: 12),
-              Container(
-                width: double.infinity,
-                padding: const EdgeInsets.all(10),
-                decoration: BoxDecoration(
-                  color: Colors.black.withOpacity(0.28),
-                  borderRadius: BorderRadius.circular(12),
-                  border: Border.all(color: Colors.white24),
-                ),
-                child: Text(
-                  [
-                    if (widget.debugSource?.trim().isNotEmpty ?? false)
-                      widget.debugSource!.trim(),
-                    if (printerStatusMessage != null)
-                      'printerStatus=$printerStatusMessage',
-                    'printText=$_printStatusText',
-                  ].join('\n'),
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 11,
-                    height: 1.35,
-                    fontFamily: 'monospace',
-                  ),
-                ),
-              ),
-            ],
           ],
         ),
       ),
@@ -1122,22 +838,7 @@ class _PaymentSuccessDialogState extends State<PaymentSuccessDialog>
 
   Widget _printerStatusChip() {
     if (printerStatus == PrinterStatus.success) {
-      return Container(
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-        decoration: BoxDecoration(
-          color: kPrimary.withOpacity(0.1),
-          borderRadius: BorderRadius.circular(20),
-          border: Border.all(color: kPrimary.withOpacity(0.2)),
-        ),
-        child: const Text(
-          "Print successful",
-          style: TextStyle(
-            color: kPrimary,
-            fontWeight: FontWeight.bold,
-            fontSize: 13,
-          ),
-        ),
-      );
+      return const SizedBox.shrink();
     }
     String text;
     Color color;

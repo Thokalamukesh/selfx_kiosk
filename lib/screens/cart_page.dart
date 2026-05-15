@@ -1,9 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
-import 'package:api_selfxo_project/core/image_url.dart';
 import 'package:api_selfxo_project/core/kiosk_config.dart';
 import 'package:api_selfxo_project/core/kiosk_memory_service.dart';
-import 'package:api_selfxo_project/widget/app_network_image.dart';
 import 'payment_screen.dart';
 
 // Note: Replace with your actual Welcome Screen import if needed
@@ -153,6 +151,7 @@ class _CartPageState extends State<CartPage> with TickerProviderStateMixin {
   }
 
   void _updateQty(int index, int newQty) {
+    final int oldQty = _asInt(widget.cart[index]["qty"]);
     setState(() {
       if (newQty <= 0) {
         widget.cart.removeAt(index);
@@ -431,16 +430,12 @@ class _CartPageState extends State<CartPage> with TickerProviderStateMixin {
             ],
           ),
         ),
-        title: FittedBox(
-          fit: BoxFit.scaleDown,
-          child: Text(
-            "Your Cart (${widget.cart.length})",
-            maxLines: 1,
-            style: TextStyle(
-              fontSize: isTablet ? 28 : 20,
-              fontWeight: FontWeight.w700,
-              color: Colors.white,
-            ),
+        title: Text(
+          "Your Cart (${widget.cart.length})",
+          style: TextStyle(
+            fontSize: isTablet ? 28 : 20,
+            fontWeight: FontWeight.w700,
+            color: Colors.white,
           ),
         ),
         centerTitle: true,
@@ -722,17 +717,16 @@ class _CartPageState extends State<CartPage> with TickerProviderStateMixin {
                                       child: Builder(
                                         builder: (ctx) {
                                           imageContext = ctx;
-                                          final imageUrl =
-                                              normalizeImageUrl(image);
                                           return image.isNotEmpty
-                                              ? AppNetworkImage(
-                                                  url: imageUrl,
+                                              ? Image.network(
+                                                  image,
                                                   fit: BoxFit.cover,
                                                   width: double.infinity,
                                                   height: double.infinity,
                                                   cacheWidth: cacheWidth,
                                                   cacheHeight: cacheHeight,
-                                                  fallback: const Center(
+                                                  errorBuilder: (_, __, ___) =>
+                                                      const Center(
                                                     child: Icon(
                                                       Icons.fastfood,
                                                       size: 24,
@@ -851,7 +845,6 @@ class _CartPageState extends State<CartPage> with TickerProviderStateMixin {
     final int qty = item["qty"];
     final double dpr = MediaQuery.of(context).devicePixelRatio;
     final int imagePx = ((isTablet ? 70 : 34) * dpr).round();
-    final imageUrl = normalizeImageUrlValue(item["image"]);
 
     return Container(
       margin: const EdgeInsets.symmetric(vertical: 4),
@@ -865,17 +858,16 @@ class _CartPageState extends State<CartPage> with TickerProviderStateMixin {
         children: [
           ClipRRect(
             borderRadius: BorderRadius.circular(8),
-            child: imageUrl.isNotEmpty
-                ? AppNetworkImage(
-                    url: imageUrl,
-                    width: isTablet ? 70 : 34,
-                    height: isTablet ? 70 : 34,
-                    cacheWidth: imagePx,
-                    cacheHeight: imagePx,
-                    fit: BoxFit.cover,
-                    fallback: Icon(Icons.fastfood, size: isTablet ? 70 : 34),
-                  )
-                : Icon(Icons.fastfood, size: isTablet ? 70 : 34),
+            child: Image.network(
+              item["image"],
+              width: isTablet ? 70 : 34,
+              height: isTablet ? 70 : 34,
+              cacheWidth: imagePx,
+              cacheHeight: imagePx,
+              fit: BoxFit.cover,
+              errorBuilder: (_, __, ___) =>
+                  Icon(Icons.fastfood, size: isTablet ? 70 : 34),
+            ),
           ),
           const SizedBox(width: 8),
           Expanded(

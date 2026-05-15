@@ -58,8 +58,7 @@ class _ProductsTabState extends State<ProductsTab> {
         final id = int.tryParse(key.toString());
         if (id == null) return;
         if (value is Map) {
-          _localOverrides[id] =
-              Map<String, dynamic>.from(value as Map);
+          _localOverrides[id] = Map<String, dynamic>.from(value);
         }
       });
     } catch (_) {}
@@ -224,8 +223,7 @@ class _ProductsTabState extends State<ProductsTab> {
   int? _extractCreatedItemId(dynamic data) {
     if (data == null) return null;
     if (data is Map) {
-      dynamic raw =
-          data["id"] ??
+      dynamic raw = data["id"] ??
           data["item_id"] ??
           data["itemId"] ??
           (data["item"] is Map ? data["item"]["id"] : null) ??
@@ -248,8 +246,7 @@ class _ProductsTabState extends State<ProductsTab> {
   }) async {
     try {
       final res = await AdminApi().getItems();
-      final List items =
-          res.data["items"] ?? res.data["data"] ?? const [];
+      final List items = res.data["items"] ?? res.data["data"] ?? const [];
       for (final raw in items) {
         if (raw is! Map) continue;
         final item = Map<String, dynamic>.from(raw);
@@ -269,8 +266,8 @@ class _ProductsTabState extends State<ProductsTab> {
               "${item["price"] ?? item["item_price"] ?? nestedMap?["price"] ?? nestedMap?["item_price"] ?? ""}",
             ) ??
             0;
-        final itemCategoryId = _categoryId(item) ??
-            _categoryId({"id": item["item_category_id"]});
+        final itemCategoryId =
+            _categoryId(item) ?? _categoryId({"id": item["item_category_id"]});
         final itemMenuId = _menuId(item) ?? _menuId({"id": item["menu_id"]});
         if (itemName == name &&
             itemPrice == price &&
@@ -912,59 +909,61 @@ class _ProductsTabState extends State<ProductsTab> {
 
                                             await _attachBranchAndRestaurant(
                                                 body);
-                                          final res =
-                                              await AdminApi().createItem(
-                                            body,
-                                          );
-                                          int? createdId =
-                                              _extractCreatedItemId(res.data);
-                                          createdId ??= await _resolveCreatedItemId(
-                                            name: name,
-                                            price: price,
-                                            categoryId: selectedCategoryId,
-                                            menuId: selectedMenuId,
-                                          );
-                                          if (createdId != null) {
-                                            String? catName;
-                                            if (selectedCategoryId != null) {
-                                              final found = categories
-                                                  .where(
-                                                    (c) =>
-                                                        _categoryId(c) ==
-                                                        selectedCategoryId,
-                                                  )
-                                                  .toList();
-                                              if (found.isNotEmpty) {
-                                                catName = _categoryName(
-                                                  found.first,
-                                                );
+                                            final res =
+                                                await AdminApi().createItem(
+                                              body,
+                                            );
+                                            int? createdId =
+                                                _extractCreatedItemId(res.data);
+                                            createdId ??=
+                                                await _resolveCreatedItemId(
+                                              name: name,
+                                              price: price,
+                                              categoryId: selectedCategoryId,
+                                              menuId: selectedMenuId,
+                                            );
+                                            if (createdId != null) {
+                                              String? catName;
+                                              if (selectedCategoryId != null) {
+                                                final found = categories
+                                                    .where(
+                                                      (c) =>
+                                                          _categoryId(c) ==
+                                                          selectedCategoryId,
+                                                    )
+                                                    .toList();
+                                                if (found.isNotEmpty) {
+                                                  catName = _categoryName(
+                                                    found.first,
+                                                  );
+                                                }
                                               }
+                                              _localOverrides[createdId] = {
+                                                "item_name": name,
+                                                "name": name,
+                                                "price": price,
+                                                "item_price": price,
+                                                "take_away_charge": parcel ?? 0,
+                                                "type": type,
+                                                "menu_id": selectedMenuId,
+                                                "item_category_id":
+                                                    selectedCategoryId,
+                                                "category_id":
+                                                    selectedCategoryId,
+                                                "category_name":
+                                                    catName ?? "Uncategorized",
+                                                "has_variations":
+                                                    hasVariations ? 1 : 0,
+                                                "has_variation":
+                                                    hasVariations ? 1 : 0,
+                                                "variations": hasVariations
+                                                    ? variations
+                                                    : [],
+                                                "id": createdId,
+                                                "item_id": createdId,
+                                              };
+                                              await _persistOverrides();
                                             }
-                                            _localOverrides[createdId] = {
-                                              "item_name": name,
-                                              "name": name,
-                                              "price": price,
-                                              "item_price": price,
-                                              "take_away_charge": parcel ?? 0,
-                                              "type": type,
-                                              "menu_id": selectedMenuId,
-                                              "item_category_id":
-                                                  selectedCategoryId,
-                                              "category_id": selectedCategoryId,
-                                              "category_name":
-                                                  catName ?? "Uncategorized",
-                                              "has_variations":
-                                                  hasVariations ? 1 : 0,
-                                              "has_variation":
-                                                  hasVariations ? 1 : 0,
-                                              "variations": hasVariations
-                                                  ? variations
-                                                  : [],
-                                              "id": createdId,
-                                              "item_id": createdId,
-                                            };
-                                            await _persistOverrides();
-                                          }
 
                                             if (!mounted) return;
 
@@ -1697,7 +1696,7 @@ class _ProductsTabState extends State<ProductsTab> {
                                               "category_id": selectedCategoryId,
                                               "category_name":
                                                   newCategoryName ??
-                                                  product["category_name"],
+                                                      product["category_name"],
                                               "has_variations":
                                                   hasVariations ? 1 : 0,
                                               "has_variation":
@@ -1715,8 +1714,7 @@ class _ProductsTabState extends State<ProductsTab> {
                                                   list,
                                                 ) {
                                                   list.removeWhere(
-                                                    (p) =>
-                                                        _itemId(p) == itemId,
+                                                    (p) => _itemId(p) == itemId,
                                                   );
                                                 });
                                                 final updated =
@@ -1807,10 +1805,15 @@ class _ProductsTabState extends State<ProductsTab> {
   // ================= UPDATE STATUS =================
   Future<void> _updateAvailability(int? id, bool available) async {
     if (id == null) return;
+    final status = available ? 1 : 0;
     setState(() {
       groupedProducts.forEach((_, list) {
         final idx = list.indexWhere((p) => _itemId(p) == id);
-        if (idx != -1) list[idx]["is_available"] = available ? 1 : 0;
+        if (idx != -1) {
+          list[idx]["is_available"] = status;
+          list[idx]["isAvailable"] = status;
+          list[idx]["available"] = status;
+        }
       });
       _applySearch();
     });
@@ -1819,8 +1822,17 @@ class _ProductsTabState extends State<ProductsTab> {
       final dio = await DioClient.getAdminDio();
       await dio.put(
         "admin/item/update/$id",
-        data: {"is_available": available ? 1 : 0},
+        data: {"is_available": status},
       );
+      _localOverrides[id] = {
+        ...?_localOverrides[id],
+        "id": id,
+        "item_id": id,
+        "is_available": status,
+        "isAvailable": status,
+        "available": status,
+      };
+      await _persistOverrides();
 
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
@@ -1829,6 +1841,7 @@ class _ProductsTabState extends State<ProductsTab> {
           duration: const Duration(seconds: 1),
         ),
       );
+      KioskMemoryService.instance.mediaRefreshTick.value++;
       widget.onProductsUpdated();
     } catch (e) {
       _loadProducts();

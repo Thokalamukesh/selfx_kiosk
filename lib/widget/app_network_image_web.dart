@@ -18,6 +18,7 @@ class AppNetworkImage extends StatefulWidget {
   final int? cacheHeight;
   final Widget fallback;
   final bool gaplessPlayback;
+  final bool preferPlatformView;
 
   const AppNetworkImage({
     super.key,
@@ -30,6 +31,7 @@ class AppNetworkImage extends StatefulWidget {
     this.cacheWidth,
     this.cacheHeight,
     this.gaplessPlayback = false,
+    this.preferPlatformView = false,
   });
 
   @override
@@ -37,53 +39,84 @@ class AppNetworkImage extends StatefulWidget {
 }
 
 class _AppNetworkImageState extends State<AppNetworkImage> {
-  late final String _viewType;
-  late final html.ImageElement _imageElement;
+  String? _viewType;
+  html.ImageElement? _imageElement;
   StreamSubscription<html.Event>? _loadSub;
   StreamSubscription<html.Event>? _errorSub;
-  bool _hasError = false;
+  bool _htmlError = false;
   bool _disposed = false;
+  bool _usePlatformView = false;
+  String? _platformViewUrl;
 
   @override
   void initState() {
     super.initState();
-    _viewType = 'app-network-image-${_nextNetworkImageId++}';
-    _imageElement = html.ImageElement();
-    _bindEvents();
-    _updateImageElement();
-    ui_web.platformViewRegistry.registerViewFactory(_viewType, (int viewId) {
-      return _imageElement;
-    });
+    _usePlatformView = widget.preferPlatformView;
+    if (_usePlatformView) {
+      _ensurePlatformView();
+    }
   }
 
   @override
   void didUpdateWidget(covariant AppNetworkImage oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.url != widget.url ||
-        oldWidget.fit != widget.fit ||
-        oldWidget.alignment != widget.alignment) {
-      _updateImageElement();
+    if (oldWidget.url != widget.url) {
+      _htmlError = false;
+      _platformViewUrl = null;
+      if (!widget.preferPlatformView) {
+        _usePlatformView = false;
+      }
+    }
+
+    if (widget.preferPlatformView && !_usePlatformView) {
+      _usePlatformView = true;
+    }
+
+    if (_usePlatformView &&
+        (oldWidget.url != widget.url ||
+            oldWidget.fit != widget.fit ||
+            oldWidget.alignment != widget.alignment ||
+            oldWidget.preferPlatformView != widget.preferPlatformView)) {
+      _ensurePlatformView();
     }
   }
 
-  void _bindEvents() {
-    _loadSub = _imageElement.onLoad.listen((_) {
+  void _bindEvents(html.ImageElement imageElement) {
+    _loadSub?.cancel();
+    _errorSub?.cancel();
+    _loadSub = imageElement.onLoad.listen((_) {
       if (!mounted || _disposed) return;
-      if (_hasError) {
-        setState(() => _hasError = false);
+      if (_htmlError) {
+        setState(() => _htmlError = false);
       }
     });
-    _errorSub = _imageElement.onError.listen((_) {
+    _errorSub = imageElement.onError.listen((_) {
       if (!mounted || _disposed) return;
-      setState(() => _hasError = true);
+      setState(() => _htmlError = true);
     });
   }
 
-  void _updateImageElement() {
+  void _ensurePlatformView() {
     if (_disposed) return;
     final url = widget.url.trim();
-    _hasError = url.isEmpty;
-    _imageElement
+    if (url.isEmpty) {
+      _htmlError = true;
+      return;
+    }
+
+    if (_viewType == null) {
+      _viewType = 'app-network-image-${_nextNetworkImageId++}';
+      ui_web.platformViewRegistry.registerViewFactory(_viewType!, (int viewId) {
+        return _imageElement ?? html.ImageElement();
+      });
+    }
+
+    final imageElement = _imageElement ?? html.ImageElement();
+    _imageElement = imageElement;
+    _platformViewUrl = url;
+    _bindEvents(imageElement);
+
+    imageElement
       ..src = url
       ..alt = ''
       ..draggable = false
@@ -97,6 +130,15 @@ class _AppNetworkImageState extends State<AppNetworkImage> {
       ..style.userSelect = 'none'
       ..style.objectFit = _cssFit(widget.fit)
       ..style.objectPosition = _cssAlignment(widget.alignment);
+  }
+
+  void _switchToPlatformView() {
+    if (_usePlatformView || _disposed || !mounted) return;
+    setState(() {
+      _usePlatformView = true;
+      _htmlError = false;
+    });
+    _ensurePlatformView();
   }
 
   String _cssFit(BoxFit fit) {
@@ -128,22 +170,54 @@ class _AppNetworkImageState extends State<AppNetworkImage> {
     _loadSub?.cancel();
     _errorSub?.cancel();
     _imageElement
-      ..src = ''
+      ?..src = ''
       ..remove();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    if (widget.url.trim().isEmpty || _hasError) {
+    final url = widget.url.trim();
+    if (url.isEmpty) {
       return widget.fallback;
     }
+
+    if (_usePlatformView) {
+      if (_htmlError || _viewType == null) {
+        return widget.fallback;
+      }
+      if (_platformViewUrl != url) {
+        _ensurePlatformView();
+      }
+      return SizedBox(
+        width: widget.width,
+        height: widget.height,
+        child: IgnorePointer(
+          ignoring: true,
+          child: HtmlElementView(viewType: _viewType!),
+        ),
+      );
+    }
+
     return SizedBox(
       width: widget.width,
       height: widget.height,
-      child: IgnorePointer(
-        ignoring: true,
-        child: HtmlElementView(viewType: _viewType),
+      child: Image.network(
+        url,
+        fit: widget.fit,
+        alignment: widget.alignment,
+        width: widget.width,
+        height: widget.height,
+        cacheWidth: widget.cacheWidth,
+        cacheHeight: widget.cacheHeight,
+        gaplessPlayback: widget.gaplessPlayback,
+        filterQuality: FilterQuality.low,
+        errorBuilder: (_, __, ___) {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            _switchToPlatformView();
+          });
+          return widget.fallback;
+        },
       ),
     );
   }

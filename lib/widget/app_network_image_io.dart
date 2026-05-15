@@ -10,6 +10,7 @@ class AppNetworkImage extends StatelessWidget {
   final int? cacheHeight;
   final Widget fallback;
   final bool gaplessPlayback;
+  final bool preferPlatformView;
 
   const AppNetworkImage({
     super.key,
@@ -22,6 +23,7 @@ class AppNetworkImage extends StatelessWidget {
     this.cacheWidth,
     this.cacheHeight,
     this.gaplessPlayback = false,
+    this.preferPlatformView = false,
   });
 
   @override

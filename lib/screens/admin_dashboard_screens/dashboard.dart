@@ -44,8 +44,7 @@ class _DashboardTabState extends State<DashboardTab> {
   }
 
   String _getOrderNumber(Map<String, dynamic> order) {
-    final raw =
-        order["order_id"] ??
+    final raw = order["order_id"] ??
         order["order_number"] ??
         order["order_pk"] ??
         "N/A";
@@ -118,7 +117,9 @@ class _DashboardTabState extends State<DashboardTab> {
   bool _isPaidStatus(String status) {
     final s = status.toLowerCase();
     if (s.isEmpty) return false;
-    if (s.contains("cancel") || s.contains("refund") || s.contains("failed") ||
+    if (s.contains("cancel") ||
+        s.contains("refund") ||
+        s.contains("failed") ||
         s.contains("void")) {
       return false;
     }
@@ -143,8 +144,7 @@ class _DashboardTabState extends State<DashboardTab> {
   }
 
   num _extractOrderTotal(Map<String, dynamic> order) {
-    final direct =
-        order["total"] ??
+    final direct = order["total"] ??
         order["grand_total"] ??
         order["amount"] ??
         order["total_amount"] ??
@@ -319,8 +319,7 @@ class _DashboardTabState extends State<DashboardTab> {
   }
 
   Future<String> _resolveRestaurantName() async {
-    final direct =
-        info["restaurant_name"]?.toString().trim() ??
+    final direct = info["restaurant_name"]?.toString().trim() ??
         info["name"]?.toString().trim() ??
         "";
     if (direct.isNotEmpty) return direct;
@@ -425,8 +424,7 @@ class _DashboardTabState extends State<DashboardTab> {
         raw["title"],
         nested["name"],
       ], fallback: "Item");
-      final category =
-          categoryOverride ??
+      final category = categoryOverride ??
           _firstNonEmpty([
             raw["category"],
             raw["category_name"],
@@ -434,22 +432,19 @@ class _DashboardTabState extends State<DashboardTab> {
             nested["category"],
             nested["category_name"],
           ], fallback: "Uncategorized");
-      final qtyRaw =
-          raw["qty"] ??
+      final qtyRaw = raw["qty"] ??
           raw["quantity"] ??
           raw["pivot"]?["quantity"] ??
           raw["count"] ??
           1;
-      final priceRaw =
-          raw["price"] ??
+      final priceRaw = raw["price"] ??
           raw["unit_price"] ??
           raw["unitPrice"] ??
           raw["pivot"]?["price"] ??
           nested["price"] ??
           raw["item_price"] ??
           0;
-      final totalRaw =
-          raw["total"] ??
+      final totalRaw = raw["total"] ??
           raw["amount"] ??
           raw["total_amount"] ??
           raw["total_price"] ??
@@ -543,16 +538,14 @@ class _DashboardTabState extends State<DashboardTab> {
           entry["title"],
         ]);
         trackCategoryOrder(categoryName);
-        final qtyRaw =
-            entry["total_qty"] ??
+        final qtyRaw = entry["total_qty"] ??
             entry["total_quantity"] ??
             entry["total_items_sold"] ??
             entry["items_sold"] ??
             entry["qty"] ??
             entry["total_items"] ??
             entry["count"];
-        final totalRaw =
-            entry["total_amount"] ??
+        final totalRaw = entry["total_amount"] ??
             entry["total"] ??
             entry["amount"] ??
             entry["total_sales"];
@@ -571,8 +564,7 @@ class _DashboardTabState extends State<DashboardTab> {
         if (items is List) {
           for (final item in _normalizeItems(
             items,
-            categoryOverride:
-                categoryName.isNotEmpty ? categoryName : null,
+            categoryOverride: categoryName.isNotEmpty ? categoryName : null,
           )) {
             addItem(item);
           }
@@ -607,8 +599,8 @@ class _DashboardTabState extends State<DashboardTab> {
           for (final item in parsed.items) {
             final category =
                 (item["category"]?.toString().trim().isNotEmpty ?? false)
-                ? item["category"].toString()
-                : "Uncategorized";
+                    ? item["category"].toString()
+                    : "Uncategorized";
             final int qty = (item["qty"] as num?)?.toInt() ?? 0;
             final num price = item["price"] is num ? item["price"] as num : 0;
             final num total = price * qty;
@@ -627,22 +619,19 @@ class _DashboardTabState extends State<DashboardTab> {
     num totalAmount = 0;
 
     final summaryMap = _findMap(data, const ["summary", "overall"]);
-    final summaryOrdersRaw =
-        summaryMap?["total_orders"] ??
+    final summaryOrdersRaw = summaryMap?["total_orders"] ??
         summaryMap?["orders"] ??
         summaryMap?["totalOrders"] ??
         summaryMap?["order_count"] ??
         summaryMap?["total_order"] ??
         summaryMap?["totalOrder"];
-    final summaryItemsRaw =
-        summaryMap?["total_items_sold"] ??
+    final summaryItemsRaw = summaryMap?["total_items_sold"] ??
         summaryMap?["total_items"] ??
         summaryMap?["items_sold"] ??
         summaryMap?["total_qty"] ??
         summaryMap?["total_quantity"] ??
         summaryMap?["totalItems"];
-    final summaryAmountRaw =
-        summaryMap?["total_amount"] ??
+    final summaryAmountRaw = summaryMap?["total_amount"] ??
         summaryMap?["total"] ??
         summaryMap?["total_sales"] ??
         summaryMap?["totalRevenue"] ??
@@ -693,8 +682,8 @@ class _DashboardTabState extends State<DashboardTab> {
       if (!hasCategoryList) {
         items.sort(
           (a, b) => (a["name"] ?? "").toString().compareTo(
-            (b["name"] ?? "").toString(),
-          ),
+                (b["name"] ?? "").toString(),
+              ),
         );
       }
       itemsByCategory[entry.key] = items;
@@ -908,9 +897,8 @@ class _DashboardTabState extends State<DashboardTab> {
         final dateKey = _formatDateKey(picked);
         final title = DateFormat('dd MMM yyyy').format(picked);
         final restaurantName = await _resolveRestaurantName();
-        final address = info["address"] != null
-            ? info["address"].toString()
-            : null;
+        final address =
+            info["address"] != null ? info["address"].toString() : null;
         final taxId = info["tax_id"]?.toString();
 
         await _printerService.printCategoryTotalsReport(
@@ -921,9 +909,8 @@ class _DashboardTabState extends State<DashboardTab> {
           itemsByCategory: apiSummary.itemsByCategory,
           totalItems: apiSummary.totalItems,
           totalAmount: apiSummary.totalAmount,
-          restaurantName: restaurantName.isNotEmpty
-              ? restaurantName
-              : "Restaurant",
+          restaurantName:
+              restaurantName.isNotEmpty ? restaurantName : "Restaurant",
           address: address,
           taxId: taxId,
         );
@@ -949,8 +936,8 @@ class _DashboardTabState extends State<DashboardTab> {
         for (final item in items) {
           final String category =
               (item["category"]?.toString().trim().isNotEmpty ?? false)
-              ? item["category"].toString()
-              : "Uncategorized";
+                  ? item["category"].toString()
+                  : "Uncategorized";
           final String name = item["name"]?.toString() ?? "Item";
           final int qty = (item["qty"] as num?)?.toInt() ?? 0;
           final num price = item["price"] is num ? item["price"] as num : 0;
@@ -993,9 +980,8 @@ class _DashboardTabState extends State<DashboardTab> {
       final dateKey = _formatDateKey(picked);
       final title = DateFormat('dd MMM yyyy').format(picked);
       final restaurantName = await _resolveRestaurantName();
-      final address = info["address"] != null
-          ? info["address"].toString()
-          : null;
+      final address =
+          info["address"] != null ? info["address"].toString() : null;
       final taxId = info["tax_id"]?.toString();
 
       await _printerService.printCategoryTotalsReport(
@@ -1006,9 +992,8 @@ class _DashboardTabState extends State<DashboardTab> {
         itemsByCategory: itemsByCategory,
         totalItems: totalItems,
         totalAmount: totalAmount,
-        restaurantName: restaurantName.isNotEmpty
-            ? restaurantName
-            : "Restaurant",
+        restaurantName:
+            restaurantName.isNotEmpty ? restaurantName : "Restaurant",
         address: address,
         taxId: taxId,
       );
@@ -1157,9 +1142,8 @@ class _DashboardTabState extends State<DashboardTab> {
                           final orderPk = _getOrderPk(o);
                           final orderNo = _getOrderNumber(o);
                           final time = o["time"]?.toString() ?? "";
-                          final total = o["total"] != null
-                              ? o["total"].toString()
-                              : "";
+                          final total =
+                              o["total"] != null ? o["total"].toString() : "";
 
                           return ListTile(
                             leading: const Icon(Icons.receipt_long_outlined),
@@ -1316,9 +1300,8 @@ class _DashboardTabState extends State<DashboardTab> {
       }
 
       final restaurantName = await _resolveRestaurantName();
-      final address = info["address"] != null
-          ? info["address"].toString()
-          : null;
+      final address =
+          info["address"] != null ? info["address"].toString() : null;
 
       final dateLabel = DateFormat('yyyy-MM-dd').format(start);
       await _printerService.printDailySummary(
@@ -1327,9 +1310,8 @@ class _DashboardTabState extends State<DashboardTab> {
         toDate: dateLabel,
         totalOrders: totalOrders,
         totalRevenue: totalRevenue,
-        restaurantName: restaurantName.isNotEmpty
-            ? restaurantName
-            : "Restaurant",
+        restaurantName:
+            restaurantName.isNotEmpty ? restaurantName : "Restaurant",
         address: address,
       );
       _showSnackBar("Summary printed", Colors.green);
@@ -1373,9 +1355,8 @@ class _DashboardTabState extends State<DashboardTab> {
                   ClipRRect(
                     borderRadius: BorderRadius.circular(10),
                     child: LinearProgressIndicator(
-                      value: paidOrders.isEmpty
-                          ? 0
-                          : printed / paidOrders.length,
+                      value:
+                          paidOrders.isEmpty ? 0 : printed / paidOrders.length,
                       minHeight: 10,
                       backgroundColor: Colors.grey.shade200,
                       color: const Color(0xFF9F342C),
@@ -1470,13 +1451,11 @@ class _DashboardTabState extends State<DashboardTab> {
           filter,
           dateRange: customRange,
         );
-        totalOrders =
-            int.tryParse(
+        totalOrders = int.tryParse(
               (stats["total_orders"] ?? stats["orders"] ?? 0).toString(),
             ) ??
             0;
-        totalRevenue =
-            num.tryParse(
+        totalRevenue = num.tryParse(
               (stats["total_revenue"] ?? stats["revenue"] ?? 0).toString(),
             ) ??
             0;
@@ -1500,9 +1479,8 @@ class _DashboardTabState extends State<DashboardTab> {
         toDate: toLabel,
         totalOrders: totalOrders,
         totalRevenue: totalRevenue,
-        restaurantName: restaurantName.isNotEmpty
-            ? restaurantName
-            : "Restaurant",
+        restaurantName:
+            restaurantName.isNotEmpty ? restaurantName : "Restaurant",
         address: address,
       );
       _showSnackBar("Summary printed", Colors.green);
@@ -1661,9 +1639,8 @@ class _DashboardTabState extends State<DashboardTab> {
         items: lines,
         totalItems: totalItems,
         totalAmount: totalAmount,
-        restaurantName: restaurantName.isNotEmpty
-            ? restaurantName
-            : "Restaurant",
+        restaurantName:
+            restaurantName.isNotEmpty ? restaurantName : "Restaurant",
         address: address,
         taxId: taxId,
       );
@@ -1753,8 +1730,8 @@ class _DashboardTabState extends State<DashboardTab> {
           final String name = item["name"]?.toString() ?? "Item";
           final String category =
               (item["category"]?.toString().trim().isNotEmpty ?? false)
-              ? item["category"].toString()
-              : "Uncategorized";
+                  ? item["category"].toString()
+                  : "Uncategorized";
           final int qty = (item["qty"] as num?)?.toInt() ?? 0;
           final num price = item["price"] is num ? item["price"] as num : 0;
           final num total = price * qty;
@@ -1816,9 +1793,8 @@ class _DashboardTabState extends State<DashboardTab> {
         itemsByCategory: itemsByCategory,
         totalItems: ordersCount,
         totalAmount: totalAmount,
-        restaurantName: restaurantName.isNotEmpty
-            ? restaurantName
-            : "Restaurant",
+        restaurantName:
+            restaurantName.isNotEmpty ? restaurantName : "Restaurant",
         address: address,
         taxId: taxId,
       );
@@ -1907,8 +1883,8 @@ class _DashboardTabState extends State<DashboardTab> {
         for (final item in items) {
           final String category =
               (item["category"]?.toString().trim().isNotEmpty ?? false)
-              ? item["category"].toString()
-              : "Uncategorized";
+                  ? item["category"].toString()
+                  : "Uncategorized";
           final String name = item["name"]?.toString() ?? "Item";
           final int qty = (item["qty"] as num?)?.toInt() ?? 0;
           final num price = item["price"] is num ? item["price"] as num : 0;
@@ -1979,9 +1955,8 @@ class _DashboardTabState extends State<DashboardTab> {
         itemsByCategory: itemsByCategory,
         totalItems: totalItems,
         totalAmount: totalAmount,
-        restaurantName: restaurantName.isNotEmpty
-            ? restaurantName
-            : "Restaurant",
+        restaurantName:
+            restaurantName.isNotEmpty ? restaurantName : "Restaurant",
         address: address,
         taxId: taxId,
       );
@@ -2074,8 +2049,7 @@ class _DashboardTabState extends State<DashboardTab> {
     bool found = false;
     for (final item in items) {
       final qty = item["qty"] is num ? item["qty"] as num : 1;
-      final charge =
-          item["take_away_charge"] ??
+      final charge = item["take_away_charge"] ??
           item["takeaway_charge"] ??
           item["parcel_charge"] ??
           item["parcelCharge"] ??
@@ -2229,7 +2203,6 @@ class _DashboardTabState extends State<DashboardTab> {
                     const SizedBox(height: 16),
                     _buildUnifiedFilterSection(),
                     const SizedBox(height: 16),
-
                     const SizedBox(height: 20),
                     _buildSearchAndTitle(),
                   ],
@@ -2275,7 +2248,6 @@ class _DashboardTabState extends State<DashboardTab> {
           left: isTablet ? 140 : 120, // prevents overlap with logo
           bottom: 16,
         ),
-
         background: Stack(
           children: [
             Positioned(
@@ -2310,24 +2282,23 @@ class _DashboardTabState extends State<DashboardTab> {
       onPressed: _openPrintMenu,
       icon: const Icon(Icons.print_outlined, size: 18),
       label: const Text("Print Summary"),
-      style:
-          OutlinedButton.styleFrom(
-            foregroundColor: brandRed,
-            side: const BorderSide(color: brandRed, width: 1.2),
-            backgroundColor: brandRed.withOpacity(0.04),
-            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(8),
-            ),
-            elevation: 0,
-          ).copyWith(
-            // Adds a subtle fill change when the user hovers (Web/Desktop)
-            overlayColor: MaterialStateProperty.resolveWith<Color?>(
-              (states) => states.contains(MaterialState.hovered)
-                  ? brandRed.withOpacity(0.08)
-                  : null,
-            ),
-          ),
+      style: OutlinedButton.styleFrom(
+        foregroundColor: brandRed,
+        side: const BorderSide(color: brandRed, width: 1.2),
+        backgroundColor: brandRed.withOpacity(0.04),
+        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(8),
+        ),
+        elevation: 0,
+      ).copyWith(
+        // Adds a subtle fill change when the user hovers (Web/Desktop)
+        overlayColor: MaterialStateProperty.resolveWith<Color?>(
+          (states) => states.contains(MaterialState.hovered)
+              ? brandRed.withOpacity(0.08)
+              : null,
+        ),
+      ),
     );
 
     // 2. Optimized Responsive Container
@@ -2340,9 +2311,8 @@ class _DashboardTabState extends State<DashboardTab> {
           // Ensures the layout transitions smoothly between Desktop and Mobile
           child: Flex(
             direction: isNarrow ? Axis.vertical : Axis.horizontal,
-            crossAxisAlignment: isNarrow
-                ? CrossAxisAlignment.start
-                : CrossAxisAlignment.center,
+            crossAxisAlignment:
+                isNarrow ? CrossAxisAlignment.start : CrossAxisAlignment.center,
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
               const Column(
@@ -2769,8 +2739,7 @@ class _DashboardTabState extends State<DashboardTab> {
     final String txnId = (order['transaction_id'] ?? 'N/A').toString();
     final String statusRaw = (order['status'] ?? 'pending').toString();
     final String status = statusRaw.toLowerCase();
-    final bool isPaid =
-        status == "paid" ||
+    final bool isPaid = status == "paid" ||
         status == "success" ||
         status == "completed" ||
         status == "delivered";
@@ -3001,33 +2970,28 @@ _ParsedOrder _parseOrderDetails(dynamic data) {
         data["order"] ?? data["data"]?["order"] ?? data["data"] ?? data;
     if (raw is Map) order = raw;
   }
-  final List rawItems =
-      (order["order_items"] ??
-              order["items"] ??
-              order["orderItems"] ??
-              dataMap?["order_items"] ??
-              [])
-          as List;
+  final List rawItems = (order["order_items"] ??
+      order["items"] ??
+      order["orderItems"] ??
+      dataMap?["order_items"] ??
+      []) as List;
   final items = rawItems.map<Map<String, dynamic>>((item) {
     final map = item is Map ? item : {};
     final nested = map["item"] is Map ? map["item"] as Map : const {};
     final qty = map["qty"] ?? map["quantity"] ?? map["pivot"]?["quantity"] ?? 1;
-    final price =
-        map["price"] ??
+    final price = map["price"] ??
         map["unit_price"] ??
         map["pivot"]?["price"] ??
         nested["price"] ??
         0;
     final name = map["name"] ?? nested["name"] ?? map["title"] ?? "Item";
-    final image =
-        map["item_photo_url"] ??
+    final image = map["item_photo_url"] ??
         map["image_url"] ??
         map["image"] ??
         nested["item_photo_url"] ??
         nested["image_url"] ??
         nested["image"];
-    final category =
-        map["category_name"] ??
+    final category = map["category_name"] ??
         map["category"] ??
         nested["category_name"] ??
         nested["category"] ??
@@ -3040,8 +3004,7 @@ _ParsedOrder _parseOrderDetails(dynamic data) {
       "image": image?.toString(),
     };
   }).toList();
-  final paymentMode =
-      order["payment_mode"] ??
+  final paymentMode = order["payment_mode"] ??
       order["paymentMethod"] ??
       order["payment_method"] ??
       order["payment_status"] ??
