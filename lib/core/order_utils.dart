@@ -10,10 +10,12 @@ import 'package:api_selfxo_project/core/kiosk_log.dart';
 
 class OrderUtils {
   static final ValueNotifier<int> infoRevision = ValueNotifier<int>(0);
+  static const Duration _indiaOffset = Duration(hours: 5, minutes: 30);
 
   static void notifyInfoUpdated() {
     infoRevision.value++;
   }
+
   // ===============================
   // 1. Internal helper to fetch raw orders
   // ===============================
@@ -68,12 +70,12 @@ class OrderUtils {
       status: "",
       range: dateRange,
     );
-    final now = DateTime.now();
+    final now = _restaurantNow();
     double total = 0;
     int count = 0;
 
     for (final o in orders) {
-      final localDate = _parseOrderDate(o)?.toLocal();
+      final localDate = _parseOrderDate(o);
       if (localDate != null &&
           _checkMatch(localDate, filter, now, dateRange) &&
           _isPaidStatus(o["status"])) {
@@ -95,7 +97,9 @@ class OrderUtils {
   static bool _isPaidStatus(dynamic status) {
     final s = status?.toString().toLowerCase() ?? "";
     if (s.isEmpty) return false;
-    if (s.contains("cancel") || s.contains("refund") || s.contains("failed") ||
+    if (s.contains("cancel") ||
+        s.contains("refund") ||
+        s.contains("failed") ||
         s.contains("void")) {
       return false;
     }
@@ -120,11 +124,11 @@ class OrderUtils {
       status: "",
       range: dateRange,
     );
-    final now = DateTime.now();
+    final now = _restaurantNow();
     List<Map<String, dynamic>> history = [];
 
     for (final o in orders) {
-      final localDate = _parseOrderDate(o)?.toLocal();
+      final localDate = _parseOrderDate(o);
       if (localDate == null ||
           !_checkMatch(localDate, filter, now, dateRange)) {
         continue;
@@ -178,8 +182,7 @@ class OrderUtils {
       final savedKioskName = prefs.getString("kiosk_name");
       String? taxId;
       if (restaurant is Map) {
-        taxId =
-            restaurant["gst_number"] ??
+        taxId = restaurant["gst_number"] ??
             restaurant["gstin"] ??
             restaurant["tax_id"] ??
             restaurant["taxId"] ??
@@ -191,6 +194,8 @@ class OrderUtils {
         "restaurant_name": res.data["restaurant"]?["name"],
         "address": res.data["restaurant"]?["address"],
         "tax_id": taxId,
+        "timezone": restaurant?["timezone"] ?? "Asia/Kolkata",
+        "restaurant_timezone": restaurant?["timezone"] ?? "Asia/Kolkata",
         "printer_id": kiosk?["printer_id"],
         "kiosk_id": kiosk?["id"] ?? kiosk?["kiosk_id"],
         "kiosk_name":
@@ -217,8 +222,9 @@ class OrderUtils {
   ) async {
     final target = DateTime(date.year, date.month, date.day);
     final dateRange = _dateRangeForDate(target);
-    final DateTimeRange? range =
-        dateRange == "custom" ? DateTimeRange(start: target, end: target) : null;
+    final DateTimeRange? range = dateRange == "custom"
+        ? DateTimeRange(start: target, end: target)
+        : null;
     final orders = await getOrdersWithItems(
       dateRange: dateRange,
       status: "",
@@ -226,12 +232,11 @@ class OrderUtils {
     );
     final results = <Map<String, dynamic>>[];
     for (final o in orders) {
-      if (o is! Map) continue;
-      final dt = _parseOrderDate(o)?.toLocal();
+      final dt = _parseOrderDate(o);
       if (dt == null) continue;
       final local = DateTime(dt.year, dt.month, dt.day);
       if (_isSameDay(local, target)) {
-        results.add(Map<String, dynamic>.from(o));
+        results.add(o);
       }
     }
     return results;
@@ -252,13 +257,10 @@ class OrderUtils {
         status: status,
         range: range,
       );
-      if (res is List) {
-        return res
-            .whereType<Map>()
-            .map<Map<String, dynamic>>((e) => Map<String, dynamic>.from(e))
-            .toList();
-      }
-      return [];
+      return res
+          .whereType<Map>()
+          .map<Map<String, dynamic>>((e) => Map<String, dynamic>.from(e))
+          .toList();
     } catch (e) {
       return [];
     }
@@ -338,8 +340,7 @@ class OrderUtils {
 
       // Feed & Cut
       await SunmiPrinter.lineWrap(3);
-    } catch (e) {
-    }
+    } catch (e) {}
   }
 
   // ===============================
@@ -428,11 +429,12 @@ class OrderUtils {
         if (range != null) {
           final start = _dateOnly(range.start);
           final end = _dateOnly(range.end);
-          final now = _dateOnly(DateTime.now());
+          final now = _dateOnly(_restaurantNow());
           if (_isSameDay(start, now) && _isSameDay(end, now)) {
             return "today";
           }
-          final y = _dateOnly(DateTime.now().subtract(const Duration(days: 1)));
+          final y =
+              _dateOnly(_restaurantNow().subtract(const Duration(days: 1)));
           if (_isSameDay(start, y) && _isSameDay(end, y)) {
             return "yesterday";
           }
@@ -447,7 +449,7 @@ class OrderUtils {
             return "lastWeek";
           }
           final last7Start = _dateOnly(
-            DateTime.now().subtract(const Duration(days: 6)),
+            _restaurantNow().subtract(const Duration(days: 6)),
           );
           if (!start.isBefore(last7Start) && !end.isAfter(now)) {
             return "last7Days";
@@ -469,9 +471,9 @@ class OrderUtils {
   }
 
   static String _dateRangeForDate(DateTime target) {
-    final now = _dateOnly(DateTime.now());
+    final now = _dateOnly(_restaurantNow());
     if (_isSameDay(target, now)) return "today";
-    final y = _dateOnly(DateTime.now().subtract(const Duration(days: 1)));
+    final y = _dateOnly(_restaurantNow().subtract(const Duration(days: 1)));
     if (_isSameDay(target, y)) return "yesterday";
 
     final startThisWeek = _startOfWeek(now);
@@ -487,7 +489,7 @@ class OrderUtils {
     }
 
     final last7Start = _dateOnly(
-      DateTime.now().subtract(const Duration(days: 6)),
+      _restaurantNow().subtract(const Duration(days: 6)),
     );
     if (!target.isBefore(last7Start) && !target.isAfter(now)) {
       return "last7Days";
@@ -508,7 +510,16 @@ class OrderUtils {
 
   static DateTime? _parseOrderDate(dynamic order) {
     if (order is Map) {
-      final raw = order["created_at"] ??
+      final formatted = order["date_time_formatted"] ??
+          order["dateTimeFormatted"] ??
+          order["formatted_date_time"] ??
+          order["formattedDateTime"];
+      final formattedDate = _parseRestaurantFormattedDate(formatted);
+      if (formattedDate != null) return formattedDate;
+
+      final raw = order["date_time"] ??
+          order["dateTime"] ??
+          order["created_at"] ??
           order["createdAt"] ??
           order["created_at_utc"] ??
           order["order_date"] ??
@@ -518,40 +529,124 @@ class OrderUtils {
     return _parseDateValue(order);
   }
 
+  static DateTime _restaurantNow() =>
+      _toRestaurantWallTime(DateTime.now().toUtc());
+
+  static DateTime _toRestaurantWallTime(DateTime value) {
+    final utc = value.isUtc ? value : value.toUtc();
+    final shifted = utc.add(_indiaOffset);
+    return DateTime(
+      shifted.year,
+      shifted.month,
+      shifted.day,
+      shifted.hour,
+      shifted.minute,
+      shifted.second,
+      shifted.millisecond,
+      shifted.microsecond,
+    );
+  }
+
+  static bool _hasExplicitTimezone(String value) {
+    final trimmed = value.trim();
+    return trimmed.endsWith("Z") ||
+        RegExp(r"[+-]\d{2}:?\d{2}$").hasMatch(trimmed);
+  }
+
+  static DateTime? _parseRestaurantFormattedDate(dynamic value) {
+    if (value == null) return null;
+    final raw = value.toString().trim();
+    if (raw.isEmpty) return null;
+    final cleaned = raw
+        .replaceAll(RegExp(r"\s+"), " ")
+        .replaceAll(RegExp(r"\s*-\s*"), " ")
+        .trim();
+    for (final pattern in const [
+      "d MMM y h:mm a",
+      "d MMM y hh:mm a",
+      "dd MMM y h:mm a",
+      "dd MMM y hh:mm a",
+      "d MMMM y h:mm a",
+      "d MMMM y hh:mm a",
+      "dd MMMM y h:mm a",
+      "dd MMMM y hh:mm a",
+      "d MMM y HH:mm",
+      "dd MMM y HH:mm",
+    ]) {
+      try {
+        return DateFormat(pattern).parseStrict(cleaned);
+      } catch (_) {}
+    }
+    return null;
+  }
+
   static DateTime? _parseDateValue(dynamic value) {
     if (value == null) return null;
-    if (value is DateTime) return value;
+    if (value is DateTime) return _toRestaurantWallTime(value);
     if (value is int) {
       if (value > 1000000000000) {
-        return DateTime.fromMillisecondsSinceEpoch(value, isUtc: true);
+        return _toRestaurantWallTime(
+          DateTime.fromMillisecondsSinceEpoch(value, isUtc: true),
+        );
       }
-      return DateTime.fromMillisecondsSinceEpoch(value * 1000, isUtc: true);
+      return _toRestaurantWallTime(
+        DateTime.fromMillisecondsSinceEpoch(value * 1000, isUtc: true),
+      );
     }
     if (value is double) {
       final v = value.toInt();
       if (v > 1000000000000) {
-        return DateTime.fromMillisecondsSinceEpoch(v, isUtc: true);
+        return _toRestaurantWallTime(
+          DateTime.fromMillisecondsSinceEpoch(v, isUtc: true),
+        );
       }
-      return DateTime.fromMillisecondsSinceEpoch(v * 1000, isUtc: true);
+      return _toRestaurantWallTime(
+        DateTime.fromMillisecondsSinceEpoch(v * 1000, isUtc: true),
+      );
     }
     if (value is String) {
       final trimmed = value.trim();
+      if (trimmed.isEmpty) return null;
+      final formatted = _parseRestaurantFormattedDate(trimmed);
+      if (formatted != null) return formatted;
+
       final direct = DateTime.tryParse(trimmed);
-      if (direct != null) return direct;
+      if (direct != null) {
+        if (_hasExplicitTimezone(trimmed)) {
+          return _toRestaurantWallTime(direct);
+        }
+        return _toRestaurantWallTime(DateTime.utc(
+          direct.year,
+          direct.month,
+          direct.day,
+          direct.hour,
+          direct.minute,
+          direct.second,
+          direct.millisecond,
+          direct.microsecond,
+        ));
+      }
 
       try {
-        return DateFormat('yyyy-MM-dd HH:mm:ss').parse(trimmed, true);
+        return _toRestaurantWallTime(
+          DateFormat('yyyy-MM-dd HH:mm:ss').parse(trimmed, true),
+        );
       } catch (_) {}
       try {
-        return DateFormat('yyyy-MM-dd HH:mm:ss.SSS').parse(trimmed, true);
+        return _toRestaurantWallTime(
+          DateFormat('yyyy-MM-dd HH:mm:ss.SSS').parse(trimmed, true),
+        );
       } catch (_) {}
       try {
-        return DateFormat('yyyy-MM-dd').parse(trimmed, true);
+        return _toRestaurantWallTime(
+          DateFormat('yyyy-MM-dd').parse(trimmed, true),
+        );
       } catch (_) {}
 
       if (trimmed.contains(' ') && !trimmed.contains('T')) {
         final normalized = trimmed.replaceFirst(' ', 'T');
-        return DateTime.tryParse(normalized);
+        final parsed = DateTime.tryParse(normalized);
+        if (parsed != null) return _toRestaurantWallTime(parsed);
       }
     }
     return null;
@@ -646,8 +741,10 @@ class OrderUtils {
           if (v.isNotEmpty) return v;
         }
       }
-      final nested =
-          value["menu_item"] ?? value["item"] ?? value["menuItem"] ?? value["product"];
+      final nested = value["menu_item"] ??
+          value["item"] ??
+          value["menuItem"] ??
+          value["product"];
       if (nested != null) {
         final nestedName = _extractItemName(nested);
         if (nestedName != null && nestedName.trim().isNotEmpty) {

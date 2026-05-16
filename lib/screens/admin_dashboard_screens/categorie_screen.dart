@@ -2,7 +2,6 @@ import 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'package:api_selfxo_project/api/admin_api.dart';
-import 'package:api_selfxo_project/api/dio_client.dart';
 import 'package:api_selfxo_project/background_image/background_image.dart';
 import 'package:api_selfxo_project/core/kiosk_memory_service.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -68,19 +67,15 @@ class _CategoriesScreenState extends State<CategoriesScreen> {
   Future<void> _persistOverrides() async {
     try {
       final prefs = await SharedPreferences.getInstance();
+      if (_localOverrides.isEmpty) {
+        await prefs.remove(_categoryOverridesKey);
+        return;
+      }
       final encoded = _localOverrides.map(
         (k, v) => MapEntry(k.toString(), v),
       );
       await prefs.setString(_categoryOverridesKey, jsonEncode(encoded));
     } catch (_) {}
-  }
-
-  void _applyLocalOverride(Map<String, dynamic> category) {
-    final id = _categoryId(category);
-    if (id == null) return;
-    final override = _localOverrides[id];
-    if (override == null) return;
-    category.addAll(override);
   }
 
   Future<void> _fetchCategories() async {
@@ -90,11 +85,15 @@ class _CategoriesScreenState extends State<CategoriesScreen> {
     try {
       final res = await AdminApi().getCategories();
       final List rawData = res.data["categories"] ?? res.data["data"] ?? [];
-      final categories = rawData.whereType<Map>().map((raw) {
-        final category = Map<String, dynamic>.from(raw);
-        _applyLocalOverride(category);
-        return category;
-      }).toList();
+      final categories = rawData
+          .whereType<Map>()
+          .map((raw) => Map<String, dynamic>.from(raw))
+          .toList();
+
+      if (_localOverrides.isNotEmpty) {
+        _localOverrides.clear();
+        await _persistOverrides();
+      }
 
       if (mounted) {
         allCategories = categories;
@@ -132,9 +131,191 @@ class _CategoriesScreenState extends State<CategoriesScreen> {
     return (cat["category_name"] ?? cat["name"] ?? "Category").toString();
   }
 
+  String _normalizedKey(String key) =>
+      key.toLowerCase().replaceAll(RegExp(r"[^a-z0-9]"), "");
+
+  dynamic _readCategoryValue(Map<String, dynamic> category, List<String> keys) {
+    for (final key in keys) {
+      if (category.containsKey(key)) return category[key];
+    }
+
+    final wanted = keys.map(_normalizedKey).toSet();
+    for (final entry in category.entries) {
+      if (wanted.contains(_normalizedKey(entry.key.toString()))) {
+        return entry.value;
+      }
+    }
+    return null;
+  }
+
+  bool? _truthyStatus(dynamic value) {
+    if (value == null) return null;
+    if (value is bool) return value;
+    if (value is num) return value != 0;
+    final normalized = value.toString().toLowerCase().trim();
+    if (normalized.isEmpty) return null;
+    if (normalized == "0" ||
+        normalized == "false" ||
+        normalized == "no" ||
+        normalized == "n" ||
+        normalized == "off" ||
+        normalized == "inactive" ||
+        normalized == "disabled" ||
+        normalized == "hidden" ||
+        normalized == "unavailable" ||
+        normalized == "not_available") {
+      return false;
+    }
+    if (normalized == "1" ||
+        normalized == "true" ||
+        normalized == "yes" ||
+        normalized == "y" ||
+        normalized == "on" ||
+        normalized == "active" ||
+        normalized == "enabled" ||
+        normalized == "available") {
+      return true;
+    }
+    return null;
+  }
+
+  bool _isCategoryActive(Map<String, dynamic> category) {
+    final raw = _readCategoryValue(category, const [
+      "is_active",
+      "isActive",
+      "active",
+      "is_available",
+      "isAvailable",
+      "available",
+      "enabled",
+      "status",
+      "category_status",
+      "categoryStatus",
+    ]);
+    return _truthyStatus(raw) ?? true;
+  }
+
+  String _categoryType(Map<String, dynamic> category) {
+    return (_readCategoryValue(category, const [
+              "type",
+              "category_type",
+              "categoryType",
+            ]) ??
+            "veg")
+        .toString();
+  }
+
+  void _setCategoryStatus(Map<String, dynamic> category, int status) {
+    category["is_active"] = status;
+    category["isActive"] = status;
+    category["active"] = status;
+    category["is_available"] = status;
+    category["isAvailable"] = status;
+    category["available"] = status;
+    category["enabled"] = status;
+    category["status"] = status;
+    category["category_status"] = status;
+    category["categoryStatus"] = status;
+  }
+
+  Future<Map<String, dynamic>?> _fetchBackendCategory(int catId) async {
+    final res = await AdminApi().getCategories();
+    _throwIfBackendFailed(res);
+    final List rawData = res.data["categories"] ?? res.data["data"] ?? [];
+    for (final raw in rawData.whereType<Map>()) {
+      final category = Map<String, dynamic>.from(raw);
+      if (_categoryId(category) == catId) return category;
+    }
+    return null;
+  }
+
+  List<Map<String, dynamic>> _categoryStatusPayloads(
+    Map<String, dynamic> category,
+    int status,
+  ) {
+    final name = _categoryName(category);
+    final type = _categoryType(category);
+    final full = {
+      "category_name": name,
+      "name": name,
+      "type": type,
+      "is_active": status,
+      "isActive": status,
+      "active": status,
+      "is_available": status,
+      "isAvailable": status,
+      "available": status,
+      "enabled": status,
+      "status": status,
+      "category_status": status,
+      "categoryStatus": status,
+    };
+
+    return [
+      full,
+      {"category_name": name, "type": type, "is_active": status},
+      {"category_name": name, "type": type, "status": status},
+      {"category_name": name, "type": type, "active": status},
+      {"category_name": name, "type": type, "is_available": status},
+      {"category_name": name, "type": type, "category_status": status},
+      {"is_active": status},
+      {"status": status},
+      {"active": status},
+      {"is_available": status},
+      {"category_status": status},
+    ];
+  }
+
+  Future<Map<String, dynamic>?> _updateCategoryStatusOnBackend(
+    int catId,
+    Map<String, dynamic> category,
+    int status,
+  ) async {
+    Exception? lastError;
+    final expectedActive = status == 1;
+    final seenPayloads = <String>{};
+
+    for (final body in _categoryStatusPayloads(category, status)) {
+      final signature = jsonEncode(body);
+      if (!seenPayloads.add(signature)) continue;
+
+      try {
+        final res = await AdminApi().updateCategory(catId.toString(), body);
+        _throwIfBackendFailed(res);
+        final backendCategory = await _fetchBackendCategory(catId);
+        if (backendCategory == null ||
+            _isCategoryActive(backendCategory) == expectedActive) {
+          return backendCategory;
+        }
+        lastError = Exception("Backend did not save the category status");
+      } catch (e) {
+        lastError = e is Exception ? e : Exception(e.toString());
+      }
+    }
+
+    throw lastError ?? Exception("Failed to update category status");
+  }
+
+  String _responseMessage(dynamic data) {
+    if (data is Map) {
+      final message = data["message"] ?? data["error"] ?? data["errors"];
+      if (message != null && message.toString().trim().isNotEmpty) {
+        return message.toString().trim();
+      }
+    }
+    return "Backend rejected the category update";
+  }
+
+  void _throwIfBackendFailed(dynamic response) {
+    final code = response.statusCode as int?;
+    if (code != null && code >= 400) {
+      throw Exception(_responseMessage(response.data));
+    }
+  }
+
   Future<void> _showEditCategoryDialog(Map<String, dynamic> category) async {
     final nameCtrl = TextEditingController(text: _categoryName(category));
-    String type = (category["type"] ?? "veg").toString();
+    String type = _categoryType(category);
     String error = "";
     bool saving = false;
     final catId = _categoryId(category);
@@ -247,23 +428,18 @@ class _CategoriesScreenState extends State<CategoriesScreen> {
                               final body = {
                                 "category_name": name,
                                 "type": type,
-                                "is_active": category["is_active"] ?? 1,
+                                "is_active":
+                                    _isCategoryActive(category) ? 1 : 0,
+                                "status": _isCategoryActive(category) ? 1 : 0,
+                                "is_available":
+                                    _isCategoryActive(category) ? 1 : 0,
                               };
-                              await AdminApi().updateCategory(
+                              final res = await AdminApi().updateCategory(
                                 catId.toString(),
                                 body,
                               );
-                              _localOverrides[catId] = {
-                                ...?_localOverrides[catId],
-                                "category_id": catId,
-                                "id": catId,
-                                "category_name": name,
-                                "name": name,
-                                "type": type,
-                                "is_active": category["is_active"] ?? 1,
-                                "isActive": category["is_active"] ?? 1,
-                                "active": category["is_active"] ?? 1,
-                              };
+                              _throwIfBackendFailed(res);
+                              _localOverrides.remove(catId);
                               await _persistOverrides();
                               if (!mounted) return;
                               Navigator.pop(dialogContext);
@@ -445,8 +621,11 @@ class _CategoriesScreenState extends State<CategoriesScreen> {
                                 "category_name": name,
                                 "type": type,
                                 "is_active": 1,
+                                "status": 1,
+                                "is_available": 1,
                               };
-                              await AdminApi().createCategory(body);
+                              final res = await AdminApi().createCategory(body);
+                              _throwIfBackendFailed(res);
                               if (!mounted) return;
                               Navigator.pop(dialogContext);
                               _fetchCategories();
@@ -500,7 +679,8 @@ class _CategoriesScreenState extends State<CategoriesScreen> {
 
   // ================= UPDATE STATUS =================
   Future<void> _toggleCategoryVisibility(int index, bool newValue) async {
-    final catId = _categoryId(filteredCategories[index]);
+    final category = Map<String, dynamic>.from(filteredCategories[index]);
+    final catId = _categoryId(category);
     if (catId == null) return;
     final status = newValue ? 1 : 0;
 
@@ -508,36 +688,18 @@ class _CategoriesScreenState extends State<CategoriesScreen> {
     setState(() {
       for (final cat in allCategories) {
         if (_categoryId(cat) == catId) {
-          cat["is_active"] = status;
-          cat["isActive"] = status;
-          cat["active"] = status;
+          _setCategoryStatus(cat, status);
         }
       }
-      filteredCategories[index]["is_active"] = status;
-      filteredCategories[index]["isActive"] = status;
-      filteredCategories[index]["active"] = status;
+      _setCategoryStatus(filteredCategories[index], status);
     });
 
     try {
-      final dio = await DioClient.getAdminDio();
-      // Adjust this endpoint to match your actual Category Update API
-      await dio.put(
-        "admin/category/update/$catId",
-        data: {"is_active": status},
-      );
-      final category = filteredCategories[index];
-      _localOverrides[catId] = {
-        ...?_localOverrides[catId],
-        "category_id": catId,
-        "id": catId,
-        "category_name": _categoryName(category),
-        "name": _categoryName(category),
-        "type": category["type"],
-        "is_active": status,
-        "isActive": status,
-        "active": status,
-      };
+      await _updateCategoryStatusOnBackend(catId, category, status);
+      _localOverrides.remove(catId);
       await _persistOverrides();
+      await _fetchCategories();
+      if (!mounted) return;
       KioskMemoryService.instance.mediaRefreshTick.value++;
 
       ScaffoldMessenger.of(context).showSnackBar(
@@ -549,6 +711,14 @@ class _CategoriesScreenState extends State<CategoriesScreen> {
       );
     } catch (e) {
       _fetchCategories(); // Revert on failure
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(e.toString().replaceFirst("Exception: ", "")),
+          backgroundColor: Colors.red,
+          duration: const Duration(seconds: 2),
+        ),
+      );
     }
   }
 
@@ -697,11 +867,11 @@ class _CategoriesScreenState extends State<CategoriesScreen> {
 
   Widget _categoryCard(int index) {
     final cat = filteredCategories[index];
-    final bool isActive = (cat["is_active"] ?? 1) == 1;
+    final bool isActive = _isCategoryActive(cat);
     final bool isTablet = MediaQuery.of(context).size.width > 600;
     final String imageUrl =
         cat["category_image"] ?? cat["item_photo_url"] ?? "";
-    final String type = (cat["type"] ?? "veg").toString();
+    final String type = _categoryType(cat);
 
     return Container(
       decoration: BoxDecoration(

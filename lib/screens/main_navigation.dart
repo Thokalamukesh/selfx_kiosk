@@ -115,11 +115,32 @@ class _MainNavigationState extends State<MainNavigation>
     bool isTruthy(dynamic value) {
       if (value == null) return false;
       if (value is bool) return value;
-      if (value is num) return value == 1 || value == 1.0;
+      if (value is num) return value != 0;
       final s = value.toString().toLowerCase().trim();
-      if (s == "1" || s == "true" || s == "yes" || s == "y") return true;
+      if (s == "0" ||
+          s == "false" ||
+          s == "no" ||
+          s == "n" ||
+          s == "off" ||
+          s == "inactive" ||
+          s == "disabled" ||
+          s == "hidden" ||
+          s == "unavailable" ||
+          s == "not_available") {
+        return false;
+      }
+      if (s == "1" ||
+          s == "true" ||
+          s == "yes" ||
+          s == "y" ||
+          s == "on" ||
+          s == "active" ||
+          s == "enabled" ||
+          s == "available") {
+        return true;
+      }
       final parsed = num.tryParse(s);
-      return parsed == 1 || parsed == 1.0;
+      return parsed != null && parsed != 0;
     }
 
     int toInt(dynamic value) {
@@ -163,7 +184,18 @@ class _MainNavigationState extends State<MainNavigation>
         apiProducts.map((e) => Map<String, dynamic>.from(e)).toList();
 
     for (final category in products) {
-      final catActiveRaw = category["is_active"];
+      final catActiveRaw = _readKey(category, const [
+        "is_active",
+        "isActive",
+        "active",
+        "is_available",
+        "isAvailable",
+        "available",
+        "enabled",
+        "status",
+        "category_status",
+        "categoryStatus",
+      ]);
       final bool catActive = catActiveRaw == null || isTruthy(catActiveRaw);
       if (!catActive) continue;
       final String catName = category["category_name"] ?? "Others";

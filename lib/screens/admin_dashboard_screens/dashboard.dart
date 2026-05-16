@@ -17,6 +17,8 @@ class DashboardTab extends StatefulWidget {
 }
 
 class _DashboardTabState extends State<DashboardTab> {
+  static const Duration _indiaOffset = Duration(hours: 5, minutes: 30);
+
   // Logic variables (Untouched)
   bool loading = true;
   Map<String, dynamic> stats = {};
@@ -2123,6 +2125,12 @@ class _DashboardTabState extends State<DashboardTab> {
 
   DateTime? _extractOrderDate(dynamic value) {
     final keys = [
+      "date_time_formatted",
+      "dateTimeFormatted",
+      "formatted_date_time",
+      "formattedDateTime",
+      "date_time",
+      "dateTime",
       "created_at",
       "order_date",
       "date",
@@ -2152,14 +2160,81 @@ class _DashboardTabState extends State<DashboardTab> {
     if (v == null) return null;
     try {
       if (v is int) {
-        return v > 1000000000000
-            ? DateTime.fromMillisecondsSinceEpoch(v)
-            : DateTime.fromMillisecondsSinceEpoch(v * 1000);
+        final instant = v > 1000000000000
+            ? DateTime.fromMillisecondsSinceEpoch(v, isUtc: true)
+            : DateTime.fromMillisecondsSinceEpoch(v * 1000, isUtc: true);
+        return _toIndiaWallTime(instant);
       }
       if (v is String) {
-        return DateTime.tryParse(v);
+        final trimmed = v.trim();
+        final formatted = _parseRestaurantFormattedDate(trimmed);
+        if (formatted != null) return formatted;
+        final parsed = DateTime.tryParse(trimmed);
+        if (parsed == null) return null;
+        if (_hasExplicitTimezone(trimmed)) {
+          return _toIndiaWallTime(parsed);
+        }
+        return _toIndiaWallTime(DateTime.utc(
+          parsed.year,
+          parsed.month,
+          parsed.day,
+          parsed.hour,
+          parsed.minute,
+          parsed.second,
+          parsed.millisecond,
+          parsed.microsecond,
+        ));
       }
+      if (v is DateTime) return _toIndiaWallTime(v);
     } catch (_) {}
+    return null;
+  }
+
+  DateTime _toIndiaWallTime(DateTime value) {
+    final utc = value.isUtc ? value : value.toUtc();
+    final shifted = utc.add(_indiaOffset);
+    return DateTime(
+      shifted.year,
+      shifted.month,
+      shifted.day,
+      shifted.hour,
+      shifted.minute,
+      shifted.second,
+      shifted.millisecond,
+      shifted.microsecond,
+    );
+  }
+
+  bool _hasExplicitTimezone(String value) {
+    final trimmed = value.trim();
+    return trimmed.endsWith("Z") ||
+        RegExp(r"[+-]\d{2}:?\d{2}$").hasMatch(trimmed);
+  }
+
+  DateTime? _parseRestaurantFormattedDate(dynamic value) {
+    if (value == null) return null;
+    final raw = value.toString().trim();
+    if (raw.isEmpty) return null;
+    final cleaned = raw
+        .replaceAll(RegExp(r"\s+"), " ")
+        .replaceAll(RegExp(r"\s*-\s*"), " ")
+        .trim();
+    for (final pattern in const [
+      "d MMM y h:mm a",
+      "d MMM y hh:mm a",
+      "dd MMM y h:mm a",
+      "dd MMM y hh:mm a",
+      "d MMMM y h:mm a",
+      "d MMMM y hh:mm a",
+      "dd MMMM y h:mm a",
+      "dd MMMM y hh:mm a",
+      "d MMM y HH:mm",
+      "dd MMM y HH:mm",
+    ]) {
+      try {
+        return DateFormat(pattern).parseStrict(cleaned);
+      } catch (_) {}
+    }
     return null;
   }
 

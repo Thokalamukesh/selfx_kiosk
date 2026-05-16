@@ -884,8 +884,18 @@ class _HomePage2State extends State<HomePage2> with TickerProviderStateMixin {
   }
 
   bool _isCategoryEntryActive(Map? category) {
-    final raw =
-        category?["is_active"] ?? category?["isActive"] ?? category?["active"];
+    final raw = _debugReadKey(category, const [
+      "is_active",
+      "isActive",
+      "active",
+      "is_available",
+      "isAvailable",
+      "available",
+      "enabled",
+      "status",
+      "category_status",
+      "categoryStatus",
+    ]);
     return raw == null || _debugIsTruthy(raw);
   }
 
@@ -2408,12 +2418,50 @@ class _HomePage2State extends State<HomePage2> with TickerProviderStateMixin {
 }
 
 Map<String, dynamic> _parseProductsIsolate(List<dynamic> raw) {
-  bool isTruthy(dynamic value) {
-    if (value == null) return false;
+  bool? truthyStatus(dynamic value) {
+    if (value == null) return null;
     if (value is bool) return value;
-    if (value is num) return value == 1;
+    if (value is num) return value != 0;
     final s = value.toString().toLowerCase().trim();
-    return s == "1" || s == "true" || s == "yes" || s == "y";
+    if (s.isEmpty) return null;
+    if (s == "0" ||
+        s == "false" ||
+        s == "no" ||
+        s == "n" ||
+        s == "off" ||
+        s == "inactive" ||
+        s == "disabled" ||
+        s == "hidden" ||
+        s == "unavailable" ||
+        s == "not_available") {
+      return false;
+    }
+    if (s == "1" ||
+        s == "true" ||
+        s == "yes" ||
+        s == "y" ||
+        s == "on" ||
+        s == "active" ||
+        s == "enabled" ||
+        s == "available") {
+      return true;
+    }
+    return null;
+  }
+
+  String normKey(String key) =>
+      key.toLowerCase().replaceAll(RegExp(r"[^a-z0-9]"), "");
+
+  dynamic readKey(Map? item, List<String> keys) {
+    if (item == null) return null;
+    for (final key in keys) {
+      if (item.containsKey(key)) return item[key];
+    }
+    final wanted = keys.map(normKey).toSet();
+    for (final entry in item.entries) {
+      if (wanted.contains(normKey(entry.key.toString()))) return entry.value;
+    }
+    return null;
   }
 
   int toInt(dynamic value) {
@@ -2455,10 +2503,19 @@ Map<String, dynamic> _parseProductsIsolate(List<dynamic> raw) {
 
   for (final category in raw) {
     if (category is! Map) continue;
-    final rawCategoryActive =
-        category["is_active"] ?? category["isActive"] ?? category["active"];
-    final bool catActive =
-        rawCategoryActive == null || isTruthy(rawCategoryActive);
+    final rawCategoryActive = readKey(category, const [
+      "is_active",
+      "isActive",
+      "active",
+      "is_available",
+      "isAvailable",
+      "available",
+      "enabled",
+      "status",
+      "category_status",
+      "categoryStatus",
+    ]);
+    final bool catActive = truthyStatus(rawCategoryActive) ?? true;
     if (!catActive) continue;
 
     final String catName = category["category_name"]?.toString() ?? "Others";
@@ -2485,7 +2542,7 @@ Map<String, dynamic> _parseProductsIsolate(List<dynamic> raw) {
           nestedMap?["is_available"] ??
           nestedMap?["isAvailable"] ??
           nestedMap?["available"];
-      if (!(rawAvailability == null || isTruthy(rawAvailability))) continue;
+      if (!(truthyStatus(rawAvailability) ?? true)) continue;
 
       final int itemId = resolveItemId(item);
       if (itemId == 0) continue;

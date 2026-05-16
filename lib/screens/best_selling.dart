@@ -43,6 +43,7 @@ class _BestSellingWidgetState extends State<BestSellingWidget> {
   VoidCallback? _maintenanceListener;
 
   static const Color kGreen = Colors.green;
+  static const Color _brandColor = Color(0xFF9F342C);
 
   @override
   void initState() {
@@ -183,7 +184,6 @@ class _BestSellingWidgetState extends State<BestSellingWidget> {
 
     final double screenWidth = MediaQuery.of(context).size.width;
     final bool isTablet = screenWidth > 600;
-
     // ✅ TABLET → EXACTLY 2 ITEMS
     // Controller is managed in didChangeDependencies.
 
@@ -235,63 +235,78 @@ class _BestSellingWidgetState extends State<BestSellingWidget> {
           ),
         ),
 
-        // 📦 PRODUCT SLIDER CONTAINER
-        Padding(
-          padding: EdgeInsets.all(isTablet ? 10 : 8),
-          child: Container(
-            width: double.infinity,
-            padding: EdgeInsets.symmetric(vertical: isTablet ? 20 : 12),
-            decoration: BoxDecoration(
-              color: const Color.fromARGB(255, 242, 220, 188),
-              borderRadius: BorderRadius.circular(12),
-            ),
-            child: Column(
-              children: [
-                if (isTablet)
-                  SizedBox(
-                    height: 155,
-                    child: PageView.builder(
-                      key: ValueKey(_viewportFraction),
-                      controller: _pageController,
-                      padEnds: false,
-                      itemCount: displayedProducts.length,
-                      onPageChanged: (i) {
-                        final next = i;
-                        if (next != currentIndex && mounted) {
-                          setState(() => currentIndex = next);
-                        }
-                      },
-                      itemBuilder: (_, i) => _buildProductCard(
-                        displayedProducts[i],
-                        true,
+        LayoutBuilder(
+          builder: (context, constraints) {
+            final availableWidth = constraints.maxWidth;
+            final isCompactPhone = !isTablet && availableWidth < 300;
+            final isWidePhone = !isTablet && availableWidth >= 360;
+            final bannerHeight = isTablet
+                ? 178.0
+                : isCompactPhone
+                    ? 116.0
+                    : isWidePhone
+                        ? 132.0
+                        : 124.0;
+
+            return Padding(
+              padding: EdgeInsets.all(isTablet ? 10 : 8),
+              child: Container(
+                width: double.infinity,
+                padding: EdgeInsets.symmetric(vertical: isTablet ? 10 : 6),
+                decoration: BoxDecoration(
+                  color: Colors.transparent,
+                  borderRadius: BorderRadius.circular(18),
+                ),
+                child: Column(
+                  children: [
+                    SizedBox(
+                      height: bannerHeight,
+                      child: PageView.builder(
+                        key: ValueKey(
+                          "best-selling-${isTablet ? 'tablet' : 'mobile'}-$_viewportFraction",
+                        ),
+                        controller: _pageController,
+                        padEnds: false,
+                        itemCount: displayedProducts.length,
+                        onPageChanged: (i) {
+                          final next = i;
+                          if (next != currentIndex && mounted) {
+                            setState(() => currentIndex = next);
+                          }
+                        },
+                        itemBuilder: (_, i) => _buildProductCard(
+                          displayedProducts[i],
+                          isTablet,
+                        ),
                       ),
                     ),
-                  )
-                else
-                  SizedBox(
-                    height: 112,
-                    child: ListView.separated(
-                      padding: const EdgeInsets.symmetric(horizontal: 8),
-                      scrollDirection: Axis.horizontal,
-                      physics: const ClampingScrollPhysics(),
-                      itemCount: displayedProducts.length,
-                      separatorBuilder: (_, __) => const SizedBox(width: 8),
-                      itemBuilder: (_, i) => SizedBox(
-                        width: (screenWidth * 0.56).clamp(160.0, 210.0),
-                        child: _buildProductCard(displayedProducts[i], false),
-                      ),
-                    ),
-                  ),
-                if (isTablet) ...[
-                  const SizedBox(height: 12),
-                  _buildDots(displayedProducts.length, true),
-                ],
-              ],
-            ),
-          ),
+                    if (displayedProducts.length > 1) ...[
+                      const SizedBox(height: 12),
+                      _buildDots(displayedProducts.length, isTablet),
+                    ],
+                  ],
+                ),
+              ),
+            );
+          },
         ),
       ],
     );
+  }
+
+  double _responsiveValue({
+    required double width,
+    required double small,
+    required double large,
+    double smallAt = 210,
+    double largeAt = 300,
+  }) {
+    final t = ((width - smallAt) / (largeAt - smallAt)).clamp(0.0, 1.0);
+    return small + ((large - small) * t);
+  }
+
+  double _responsiveClamp(double value, double min, double max) {
+    return value.clamp(min, max).toDouble();
   }
 
   Rect? _rectFromContext(BuildContext? context) {
@@ -324,141 +339,176 @@ class _BestSellingWidgetState extends State<BestSellingWidget> {
       );
     }
 
-    return Container(
-      margin: EdgeInsets.symmetric(horizontal: isTablet ? 6 : 3),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(14),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withOpacity(0.08),
-            blurRadius: 8,
-            offset: const Offset(0, 4),
-          ),
-        ],
-      ),
-      child: Row(
-        children: [
-          _imageSection(
-            p,
-            isTablet,
-            onContextReady: (ctx) => imageContext = ctx,
-          ),
-          Expanded(
-            child: Padding(
-              padding: EdgeInsets.symmetric(
-                horizontal: isTablet ? 10 : 8,
-                vertical: isTablet ? 6 : 5,
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final cardWidth = constraints.maxWidth;
+        final imagePanelWidth = isTablet
+            ? _responsiveClamp(cardWidth * 0.48, 180, 250)
+            : _responsiveClamp(cardWidth * 0.52, 108, 150);
+        final leftPadding = isTablet
+            ? _responsiveClamp(cardWidth * 0.06, 18, 26)
+            : _responsiveValue(width: cardWidth, small: 10, large: 14);
+        final rightPadding = imagePanelWidth + (isTablet ? 12 : 8);
+        final titleFont = isTablet
+            ? _responsiveClamp(cardWidth * 0.048, 18, 22)
+            : _responsiveClamp(cardWidth * 0.062, 12, 14.5);
+        final priceFont = isTablet
+            ? _responsiveClamp(cardWidth * 0.052, 19, 23)
+            : _responsiveClamp(cardWidth * 0.068, 14, 16);
+
+        return Container(
+          margin: EdgeInsets.symmetric(horizontal: isTablet ? 8 : 4),
+          decoration: BoxDecoration(
+            color: const Color(0xFFFFEFE1),
+            borderRadius: BorderRadius.circular(20),
+            boxShadow: [
+              BoxShadow(
+                color: const Color(0xFFB44A1D).withOpacity(0.10),
+                blurRadius: 14,
+                offset: const Offset(0, 7),
               ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Text(
-                    p.name,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                      fontWeight: FontWeight.bold,
-                      fontSize: isTablet ? 16 : 11,
-                    ),
-                  ),
-                  SizedBox(height: isTablet ? 2 : 1),
-                  Text(
-                    "₹${p.price}",
-                    style: TextStyle(
-                      color: const Color.fromARGB(255, 0, 0, 0),
-                      fontSize: isTablet ? 18 : 13,
-                      fontWeight: FontWeight.w800,
-                    ),
-                  ),
-                  if (needsCustomization)
-                    Text(
-                      "Variants Available",
-                      style: TextStyle(
-                        fontSize: isTablet ? 10 : 8.5,
-                        color: Colors.orange,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                  SizedBox(height: isTablet ? 6 : 4),
-                  qty == 0
-                      ? _addButton(handleAdd, isTablet)
-                      : _counter(
+            ],
+          ),
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(20),
+            child: Stack(
+              children: [
+                Positioned(
+                  top: 0,
+                  right: 0,
+                  bottom: 0,
+                  width: imagePanelWidth,
+                  child: Stack(
+                    children: [
+                      Positioned.fill(
+                        child: _topSellingImage(
                           p,
-                          qty,
                           isTablet,
-                          () => _rectFromContext(imageContext),
+                          onContextReady: (ctx) => imageContext = ctx,
                         ),
-                ],
-              ),
+                      ),
+                      Positioned(
+                        top: isTablet ? 12 : 8,
+                        left: isTablet ? 12 : 8,
+                        child: _vegIcon(p.isVeg),
+                      ),
+                    ],
+                  ),
+                ),
+                Padding(
+                  padding: EdgeInsets.fromLTRB(
+                    leftPadding,
+                    isTablet ? 18 : 10,
+                    rightPadding,
+                    isTablet ? 14 : 9,
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      SizedBox(height: isTablet ? 8 : 5),
+                      Text(
+                        p.name,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          color: const Color(0xFF1A1A1A),
+                          fontWeight: FontWeight.w900,
+                          fontSize: titleFont,
+                          height: 1.05,
+                        ),
+                      ),
+                      SizedBox(height: isTablet ? 7 : 4),
+                      Text(
+                        "₹${p.price}",
+                        style: TextStyle(
+                          color: _brandColor,
+                          fontSize: priceFont,
+                          fontWeight: FontWeight.w900,
+                        ),
+                      ),
+                      if (needsCustomization)
+                        Padding(
+                          padding: const EdgeInsets.only(top: 1),
+                          child: Text(
+                            "Variants Available",
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              fontSize: isTablet ? 10 : 8,
+                              color: const Color(0xFFB46622),
+                              fontWeight: FontWeight.w800,
+                            ),
+                          ),
+                        ),
+                      SizedBox(height: isTablet ? 10 : 6),
+                      qty == 0
+                          ? _addButton(handleAdd, isTablet,
+                              cardWidth: cardWidth)
+                          : _counter(
+                              p,
+                              qty,
+                              isTablet,
+                              () => _rectFromContext(imageContext),
+                              cardWidth: cardWidth,
+                            ),
+                    ],
+                  ),
+                ),
+              ],
             ),
           ),
-        ],
-      ),
+        );
+      },
     );
   }
 
-  Widget _imageSection(
+  Widget _topSellingImage(
     ProductModel p,
     bool isTablet, {
     required ValueChanged<BuildContext> onContextReady,
   }) {
     final dpr = MediaQuery.of(context).devicePixelRatio;
-    final double size = isTablet ? 110 : 64;
-    final double cardHeight = isTablet ? 155 : 112;
-    final int cacheWidth = (size * dpr).round();
-    final int cacheHeight = (cardHeight * dpr).round();
 
-    return SizedBox(
-      width: size,
-      height: cardHeight,
-      child: Builder(
-        builder: (ctx) {
-          onContextReady(ctx);
-          final imageUrl = normalizeImageUrl(p.image);
-          return ClipRRect(
-            borderRadius: const BorderRadius.horizontal(
-              left: Radius.circular(14),
-            ),
-            child: Stack(
-              children: [
-                Positioned.fill(
-                  child: imageUrl.isNotEmpty
-                      ? AppNetworkImage(
-                          key: ValueKey("best-selling-image-${p.id}"),
-                          url: imageUrl,
-                          fit: BoxFit.cover,
-                          alignment: Alignment.center,
-                          gaplessPlayback: true,
-                          cacheWidth: cacheWidth,
-                          cacheHeight: cacheHeight,
-                          fallback: Container(
-                            color: Colors.grey.shade200,
-                            child: Icon(
-                              Icons.fastfood,
-                              size: isTablet ? 24 : 18,
-                            ),
-                          ),
-                        )
-                      : Container(
-                          color: Colors.grey.shade200,
-                          child: Icon(
-                            Icons.fastfood,
-                            size: isTablet ? 24 : 18,
-                          ),
-                        ),
-                ),
-                Positioned(
-                  top: isTablet ? 8 : 6,
-                  left: isTablet ? 8 : 6,
-                  child: _vegIcon(p.isVeg),
-                ),
-              ],
-            ),
-          );
-        },
-      ),
+    return Builder(
+      builder: (ctx) {
+        onContextReady(ctx);
+        final imageUrl = normalizeImageUrl(p.image);
+        return LayoutBuilder(
+          builder: (context, constraints) {
+            final cacheWidth =
+                (constraints.maxWidth * dpr).round().clamp(1, 4096);
+            final cacheHeight =
+                (constraints.maxHeight * dpr).round().clamp(1, 4096);
+            return imageUrl.isNotEmpty
+                ? AppNetworkImage(
+                    key: ValueKey('best-selling-image-${p.id}'),
+                    url: imageUrl,
+                    fit: BoxFit.cover,
+                    alignment: Alignment.center,
+                    gaplessPlayback: true,
+                    cacheWidth: cacheWidth,
+                    cacheHeight: cacheHeight,
+                    fallback: Container(
+                      color: Colors.transparent,
+                      child: Icon(
+                        Icons.fastfood,
+                        color: const Color(0xFFC40012),
+                        size: isTablet ? 40 : 26,
+                      ),
+                    ),
+                  )
+                : Container(
+                    color: Colors.transparent,
+                    child: Icon(
+                      Icons.fastfood,
+                      color: const Color(0xFFC40012),
+                      size: isTablet ? 40 : 26,
+                    ),
+                  );
+          },
+        );
+      },
     );
   }
 
@@ -476,38 +526,51 @@ class _BestSellingWidgetState extends State<BestSellingWidget> {
         ),
       );
 
-  Widget _addButton(VoidCallback onTap, bool isTablet) {
+  Widget _addButton(
+    VoidCallback onTap,
+    bool isTablet, {
+    required double cardWidth,
+  }) {
+    final buttonWidth = isTablet
+        ? _responsiveClamp(cardWidth * 0.30, 118, 138)
+        : _responsiveClamp(cardWidth * 0.38, 76, 94);
+    final buttonHeight =
+        isTablet ? 42.0 : _responsiveClamp(cardWidth * 0.13, 28, 32);
+
     return SizedBox(
-      width: double.infinity,
-      height: isTablet ? 44 : 28,
-      child: OutlinedButton(
-        style: OutlinedButton.styleFrom(
-          backgroundColor: const Color(0xFFF4C66A),
-          foregroundColor: const Color(0xFF1F1F1F),
-          side: const BorderSide(color: Color(0xFFE2B85E), width: 1),
-          padding: EdgeInsets.zero,
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-        ),
-        onPressed: onTap,
-        child: Row(
-          mainAxisAlignment: MainAxisAlignment.center,
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(
-              Icons.add,
-              color: const Color(0xFF1F1F1F),
-              size: isTablet ? 18 : 13,
+      width: buttonWidth,
+      height: buttonHeight,
+      child: Material(
+        color: Colors.transparent,
+        borderRadius: BorderRadius.circular(isTablet ? 11 : 8),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(isTablet ? 11 : 8),
+          onTap: onTap,
+          child: Ink(
+            decoration: BoxDecoration(
+              color: _brandColor,
+              borderRadius: BorderRadius.circular(isTablet ? 11 : 8),
+              boxShadow: [
+                BoxShadow(
+                  color: _brandColor.withOpacity(0.24),
+                  blurRadius: 10,
+                  offset: const Offset(0, 4),
+                ),
+              ],
             ),
-            SizedBox(width: isTablet ? 6 : 4),
-            Text(
-              "Add",
-              style: TextStyle(
-                color: const Color(0xFF1F1F1F),
-                fontWeight: FontWeight.w800,
-                fontSize: isTablet ? 16 : 12,
+            child: Center(
+              child: Text(
+                "Order Now",
+                style: TextStyle(
+                  color: Colors.white,
+                  fontWeight: FontWeight.w900,
+                  fontSize: isTablet
+                      ? 14
+                      : _responsiveClamp(cardWidth * 0.044, 9.5, 11),
+                ),
               ),
             ),
-          ],
+          ),
         ),
       ),
     );
@@ -517,17 +580,22 @@ class _BestSellingWidgetState extends State<BestSellingWidget> {
     ProductModel p,
     int qty,
     bool isTablet,
-    Rect? Function() imageRectBuilder,
-  ) {
-    final double buttonHeight = isTablet ? 40 : 28;
+    Rect? Function() imageRectBuilder, {
+    required double cardWidth,
+  }) {
+    final double buttonHeight =
+        isTablet ? 40 : _responsiveClamp(cardWidth * 0.13, 28, 32);
+    final double counterWidth = isTablet
+        ? _responsiveClamp(cardWidth * 0.30, 118, 138)
+        : _responsiveClamp(cardWidth * 0.38, 76, 94);
     return SizedBox(
       height: buttonHeight,
-      width: double.infinity,
+      width: counterWidth,
       child: Container(
         decoration: BoxDecoration(
-          color: Colors.white,
+          color: const Color(0xFFFFE1D2),
           borderRadius: BorderRadius.circular(8),
-          border: Border.all(color: Colors.grey.shade300),
+          border: Border.all(color: const Color(0xFFE7AF9D)),
         ),
         child: Row(
           children: [
@@ -636,12 +704,18 @@ class _BestSellingWidgetState extends State<BestSellingWidget> {
         (i) => AnimatedContainer(
           duration: const Duration(milliseconds: 300),
           margin: const EdgeInsets.symmetric(horizontal: 4),
-          width: currentIndex == i ? (isTablet ? 24 : 18) : 8,
-          height: 8,
+          width: currentIndex == i ? (isTablet ? 24 : 16) : (isTablet ? 9 : 7),
+          height: isTablet ? 8 : 7,
           decoration: BoxDecoration(
             color: currentIndex == i
-                ? const Color.fromARGB(255, 255, 255, 255)
-                : const Color.fromARGB(255, 214, 199, 151),
+                ? const Color(0xFF9F342C)
+                : Colors.white.withOpacity(0.75),
+            border: Border.all(
+              color: currentIndex == i
+                  ? const Color(0xFF9F342C)
+                  : const Color(0xFFD9C8A8),
+              width: 1,
+            ),
             borderRadius: BorderRadius.circular(10),
           ),
         ),
