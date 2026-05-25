@@ -4,15 +4,17 @@ import 'package:api_selfxo_project/background_image/background_image.dart';
 
 import 'package:api_selfxo_project/screens/payment_success.dart';
 // Ensure this is imported
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../api/kiosk_api.dart';
+import '../core/image_url.dart';
 import '../core/device_info.dart';
 import '../core/idle_timer.dart';
 import 'package:api_selfxo_project/core/kiosk_memory_service.dart';
-import 'package:api_selfxo_project/core/kiosk_log.dart';
+import 'package:api_selfxo_project/widget/app_network_image.dart';
 
 class PaymentScreen extends StatefulWidget {
   final int totalAmount;
@@ -30,20 +32,61 @@ class PaymentScreen extends StatefulWidget {
   State<PaymentScreen> createState() => _PaymentScreenState();
 }
 
+int _paymentAsInt(dynamic v) {
+  if (v is int) return v;
+  if (v is num) return v.toInt();
+  return int.tryParse(v?.toString() ?? "") ?? 0;
+}
+
+List<Map<String, dynamic>> _buildPaymentOrderItems(
+  List<Map<String, dynamic>> cart,
+) {
+  return cart.map((item) {
+    final basePrice = _paymentAsInt(item["price"]);
+    final variation = item["variation"];
+    final modifiers = (item["modifiers"] as List? ?? const []);
+    final finalUnitPrice = basePrice +
+        _paymentAsInt(variation?["price"]) +
+        modifiers.fold<int>(
+          0,
+          (sum, m) => sum + _paymentAsInt(m["price"]),
+        );
+
+    return {
+      "id": item["id"],
+      "item_name": item["name"],
+      "quantity": _paymentAsInt(item["qty"]),
+      "price": finalUnitPrice,
+      "itemPrice": finalUnitPrice,
+      "item_photo_url": item["image"],
+      "variation_id": variation?["id"],
+      "variation_name": variation?["variation"],
+      "has_modifiers": modifiers.isNotEmpty,
+      "modifiers": modifiers
+          .map(
+            (m) => {"id": m["id"], "name": m["name"], "price": m["price"]},
+          )
+          .toList(),
+    };
+  }).toList();
+}
+
 class _PaymentScreenState extends State<PaymentScreen>
     with WidgetsBindingObserver {
   static const Color kPrimaryOrange = Color(0xFFFF5722);
   static const Color kBgGrey = Color(0xFFF1F3F6);
 
-  int _remainingSeconds = 250;
+  int _remainingSeconds = 300;
+  late final ValueNotifier<int> _remainingSecondsNotifier;
+  late final ValueNotifier<int> _failSecondsNotifier;
+  late final ValueNotifier<double> _failProgressNotifier;
   Timer? countdownTimer;
   static const int _failAutoCloseSeconds = 3;
   int _failSeconds = _failAutoCloseSeconds;
-  double _failProgress = 1.0;
-  double _failProgressTarget = 1.0;
 
   bool loading = true;
   bool _started = false;
+  bool _pollingPayment = false;
   String? errorMessage;
   bool _active = true;
 
@@ -57,15 +100,12 @@ class _PaymentScreenState extends State<PaymentScreen>
   Timer? timeoutTimer;
   Timer? _paymentFailTimer;
 
-  int _asInt(dynamic v) {
-    if (v is int) return v;
-    if (v is num) return v.toInt();
-    return int.tryParse(v?.toString() ?? "") ?? 0;
-  }
-
   @override
   void initState() {
     super.initState();
+    _remainingSecondsNotifier = ValueNotifier<int>(_remainingSeconds);
+    _failSecondsNotifier = ValueNotifier<int>(_failAutoCloseSeconds);
+    _failProgressNotifier = ValueNotifier<double>(1.0);
     IdleTimer.pause();
     KioskMemoryService.instance.pause();
     WidgetsBinding.instance.addObserver(this);
@@ -230,7 +270,8 @@ class _PaymentScreenState extends State<PaymentScreen>
           displayRestaurantName = name.toUpperCase();
         });
       }
-    } catch (e) {
+    } catch (_) {
+      // Non-critical: the payment flow can continue with the cached/default name.
     }
   }
 
@@ -240,35 +281,10 @@ class _PaymentScreenState extends State<PaymentScreen>
     _started = true;
 
     try {
-      final orderItems = widget.cart.map((item) {
-        final basePrice = _asInt(item["price"]);
-        final variation = item["variation"];
-        final modifiers = (item["modifiers"] as List? ?? []);
-        final finalUnitPrice =
-            basePrice +
-            _asInt(variation?["price"]) +
-            modifiers.fold<int>(
-              0,
-              (sum, m) => sum + _asInt(m["price"]),
-            );
-
-        return {
-          "id": item["id"],
-          "item_name": item["name"],
-          "quantity": _asInt(item["qty"]),
-          "price": finalUnitPrice,
-          "itemPrice": finalUnitPrice,
-          "item_photo_url": item["image"],
-          "variation_id": variation?["id"],
-          "variation_name": variation?["variation"],
-          "has_modifiers": modifiers.isNotEmpty,
-          "modifiers": modifiers
-              .map(
-                (m) => {"id": m["id"], "name": m["name"], "price": m["price"]},
-              )
-              .toList(),
-        };
-      }).toList();
+      // Build the order payload away from the UI isolate. Large carts with
+      // modifiers can otherwise cause a visible hitch before the QR appears.
+      final orderItems = await compute(_buildPaymentOrderItems, widget.cart);
+      if (!_active || !mounted) return;
 
       final createRes = await KioskApi().createOrder(
         orderType: widget.orderType,
@@ -396,10 +412,11 @@ class _PaymentScreenState extends State<PaymentScreen>
   bool _looksLikeImageUrl(String value) {
     final v = value.toLowerCase();
     if (!(v.startsWith("http://") || v.startsWith("https://"))) return false;
-    return v.contains(".png") ||
-        v.contains(".jpg") ||
-        v.contains(".jpeg") ||
-        v.contains(".webp");
+    return isSupportedRasterImageUrl(v) &&
+        (v.contains(".png") ||
+            v.contains(".jpg") ||
+            v.contains(".jpeg") ||
+            v.contains(".webp"));
   }
 
   void _startPaymentPolling() {
@@ -407,16 +424,22 @@ class _PaymentScreenState extends State<PaymentScreen>
     paymentTimer = Timer.periodic(const Duration(seconds: 3), (_) async {
       if (!_active || !mounted) return;
       if (orderId == null) return;
+      if (_pollingPayment) return;
 
       try {
+        _pollingPayment = true;
         final res = await KioskApi().checkPayment(orderId!);
+        if (!_active || !mounted) return;
 
         if (res.data["status"] == "paid") {
           paymentTimer?.cancel();
 
           await _handlePaymentSuccess();
         }
-      } catch (_) {}
+      } catch (_) {
+      } finally {
+        _pollingPayment = false;
+      }
     });
   }
 
@@ -429,12 +452,13 @@ class _PaymentScreenState extends State<PaymentScreen>
     timeoutTimer?.cancel();
     _paymentFailTimer?.cancel();
 
-    try {
-      // ✅ Backend triggers Angular + Capacitor USB kioskLog
-      await KioskApi().printReceipt(orderId!);
-    } catch (e) {
-      // Optional: log only, do NOT block success screen
-    }
+    // Fire-and-forget backend print trigger. Awaiting this before navigation can
+    // leave the payment screen frozen while receipt generation/network work runs.
+    unawaited(() async {
+      try {
+        await KioskApi().printReceipt(orderId!);
+      } catch (_) {}
+    }());
 
     // 🎉 Always continue
     if (!_active || !mounted) return;
@@ -464,7 +488,8 @@ class _PaymentScreenState extends State<PaymentScreen>
           _handleError("Payment timed out");
         }
       } else {
-        setState(() => _remainingSeconds--);
+        _remainingSeconds--;
+        _remainingSecondsNotifier.value = _remainingSeconds;
       }
     });
   }
@@ -495,19 +520,11 @@ class _PaymentScreenState extends State<PaymentScreen>
     );
   }
 
-  void _cancelPaymentFailTimer() {
-    _paymentFailTimer?.cancel();
-    _paymentFailTimer = null;
-    _failSeconds = _failAutoCloseSeconds;
-    _failProgress = 1.0;
-    _failProgressTarget = 1.0;
-  }
-
   void _startFailAutoClose() {
     _paymentFailTimer?.cancel();
     _failSeconds = _failAutoCloseSeconds;
-    _failProgress = 1.0;
-    _failProgressTarget = 1.0;
+    _failSecondsNotifier.value = _failAutoCloseSeconds;
+    _failProgressNotifier.value = 1.0;
     _paymentFailTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
       if (!_active || !mounted) {
         timer.cancel();
@@ -521,12 +538,11 @@ class _PaymentScreenState extends State<PaymentScreen>
           (route) => false,
         );
       } else {
-        try {
-          setState(() {
-            _failSeconds--;
-            _failProgressTarget = _failSeconds / _failAutoCloseSeconds;
-          });
-        } catch (_) {}
+        _failSeconds--;
+        // Keep the auto-close progress local to the overlay instead of
+        // rebuilding the whole payment/QR page every second.
+        _failSecondsNotifier.value = _failSeconds;
+        _failProgressNotifier.value = _failSeconds / _failAutoCloseSeconds;
       }
     });
   }
@@ -539,6 +555,9 @@ class _PaymentScreenState extends State<PaymentScreen>
     timeoutTimer?.cancel();
     countdownTimer?.cancel();
     _paymentFailTimer?.cancel();
+    _remainingSecondsNotifier.dispose();
+    _failSecondsNotifier.dispose();
+    _failProgressNotifier.dispose();
     IdleTimer.resume();
     KioskMemoryService.instance.resume();
     super.dispose();
@@ -654,22 +673,25 @@ class _PaymentScreenState extends State<PaymentScreen>
                 ),
               ),
               const SizedBox(width: 14),
-              RichText(
-                text: TextSpan(
-                  style: const TextStyle(
-                    fontSize: 22,
-                    fontWeight: FontWeight.w800,
+              ValueListenableBuilder<int>(
+                valueListenable: _remainingSecondsNotifier,
+                builder: (_, seconds, __) => RichText(
+                  text: TextSpan(
+                    style: const TextStyle(
+                      fontSize: 22,
+                      fontWeight: FontWeight.w800,
+                    ),
+                    children: [
+                      TextSpan(
+                        text: "$seconds ",
+                        style: const TextStyle(color: Colors.orange),
+                      ),
+                      const TextSpan(
+                        text: "Seconds",
+                        style: TextStyle(color: Colors.black),
+                      ),
+                    ],
                   ),
-                  children: [
-                    TextSpan(
-                      text: "$_remainingSeconds ",
-                      style: const TextStyle(color: Colors.orange),
-                    ),
-                    const TextSpan(
-                      text: "Seconds",
-                      style: TextStyle(color: Colors.black),
-                    ),
-                  ],
                 ),
               ),
             ],
@@ -777,79 +799,84 @@ class _PaymentScreenState extends State<PaymentScreen>
               // 🎯 QR Section
               Container(
                 padding: const EdgeInsets.all(12),
-                child: Stack(
-                  alignment: Alignment.center,
-                  children: [
-                    if (!hasQr)
-                      Container(
-                        width: isTablet ? 320 : 240,
-                        height: isTablet ? 320 : 240,
-                        alignment: Alignment.center,
-                        decoration: BoxDecoration(
-                          color: Colors.grey.shade100,
-                          borderRadius: BorderRadius.circular(12),
-                          border: Border.all(color: Colors.grey.shade300),
-                        ),
-                        child: const Text(
-                          "QR not available",
-                          style: TextStyle(
-                            fontWeight: FontWeight.w600,
-                            color: Colors.black54,
-                          ),
-                        ),
-                      )
-                    else if (_looksLikeImageUrl(qrValue))
-                      Image.network(
-                        qrValue,
-                        width: isTablet ? 320 : 240,
-                        height: isTablet ? 320 : 240,
-                        fit: BoxFit.contain,
-                        errorBuilder: (_, __, ___) => const SizedBox.shrink(),
-                      )
-                    else
-                      QrImageView(
-                        data: qrValue,
-                        size: isTablet ? 320 : 240, // Larger QR for Tablets
-                        padding: const EdgeInsets.all(16),
-                        errorStateBuilder: (ctx, err) => Container(
+                child: RepaintBoundary(
+                  child: Stack(
+                    alignment: Alignment.center,
+                    children: [
+                      if (!hasQr)
+                        Container(
                           width: isTablet ? 320 : 240,
                           height: isTablet ? 320 : 240,
                           alignment: Alignment.center,
+                          decoration: BoxDecoration(
+                            color: Colors.grey.shade100,
+                            borderRadius: BorderRadius.circular(12),
+                            border: Border.all(color: Colors.grey.shade300),
+                          ),
                           child: const Text(
-                            "Invalid QR data",
-                            style: TextStyle(color: Colors.redAccent),
+                            "QR not available",
+                            style: TextStyle(
+                              fontWeight: FontWeight.w600,
+                              color: Colors.black54,
+                            ),
+                          ),
+                        )
+                      else if (_looksLikeImageUrl(qrValue))
+                        AppNetworkImage(
+                          url: normalizeImageUrl(qrValue),
+                          width: isTablet ? 320 : 240,
+                          height: isTablet ? 320 : 240,
+                          fit: BoxFit.contain,
+                          cacheWidth: isTablet ? 320 : 240,
+                          cacheHeight: isTablet ? 320 : 240,
+                          fallback: const SizedBox.shrink(),
+                        )
+                      else
+                        QrImageView(
+                          data: qrValue,
+                          size: isTablet ? 320 : 240, // Larger QR for Tablets
+                          padding: const EdgeInsets.all(16),
+                          gapless: true,
+                          errorStateBuilder: (ctx, err) => Container(
+                            width: isTablet ? 320 : 240,
+                            height: isTablet ? 320 : 240,
+                            alignment: Alignment.center,
+                            child: const Text(
+                              "Invalid QR data",
+                              style: TextStyle(color: Colors.redAccent),
+                            ),
                           ),
                         ),
+                      _qrCorner(
+                        top: 0,
+                        left: 0,
+                        isTop: true,
+                        isLeft: true,
+                        isTablet: isTablet,
                       ),
-                    _qrCorner(
-                      top: 0,
-                      left: 0,
-                      isTop: true,
-                      isLeft: true,
-                      isTablet: isTablet,
-                    ),
-                    _qrCorner(
-                      top: 0,
-                      right: 0,
-                      isTop: true,
-                      isLeft: false,
-                      isTablet: isTablet,
-                    ),
-                    _qrCorner(
-                      bottom: 0,
-                      left: 0,
-                      isTop: false,
-                      isLeft: true,
-                      isTablet: isTablet,
-                    ),
-                    _qrCorner(
-                      bottom: 0,
-                      right: 0,
-                      isTop: false,
-                      isLeft: false,
-                      isTablet: isTablet,
-                    ),
-                  ],
+                      _qrCorner(
+                        top: 0,
+                        right: 0,
+                        isTop: true,
+                        isLeft: false,
+                        isTablet: isTablet,
+                      ),
+                      _qrCorner(
+                        bottom: 0,
+                        left: 0,
+                        isTop: false,
+                        isLeft: true,
+                        isTablet: isTablet,
+                      ),
+                      _qrCorner(
+                        bottom: 0,
+                        right: 0,
+                        isTop: false,
+                        isLeft: false,
+                        isTablet: isTablet,
+                      ),
+                    ],
+                  ),
                 ),
               ),
 
@@ -907,10 +934,12 @@ class _PaymentScreenState extends State<PaymentScreen>
       runSpacing: 16,
       crossAxisAlignment: WrapCrossAlignment.center,
       children: [
-        _buildPremiumIcon(FontAwesomeIcons.googlePay, Color(0xFF4285F4), ""),
-        _buildPremiumIcon(FontAwesomeIcons.amazonPay, Color(0xFFFF9900), ""),
-        _buildPremiumIcon(FontAwesomeIcons.wallet, Color(0xFF5f259f), ""),
-        _buildPremiumIcon(FontAwesomeIcons.bolt, Color(0xFF00baf2), ""),
+        _buildPremiumIcon(
+            FontAwesomeIcons.googlePay, const Color(0xFF4285F4), ""),
+        _buildPremiumIcon(
+            FontAwesomeIcons.amazonPay, const Color(0xFFFF9900), ""),
+        _buildPremiumIcon(FontAwesomeIcons.wallet, const Color(0xFF5f259f), ""),
+        _buildPremiumIcon(FontAwesomeIcons.bolt, const Color(0xFF00baf2), ""),
         _buildPremiumIcon(FontAwesomeIcons.shieldHalved, Colors.black, "CRED"),
       ],
     );
@@ -948,17 +977,6 @@ class _PaymentScreenState extends State<PaymentScreen>
         ],
       ),
     );
-  }
-
-  void _redirectToWelcomeAfterDelay() {
-    Future.delayed(const Duration(seconds: 2), () {
-      if (!mounted) return;
-
-      Navigator.of(context).pushNamedAndRemoveUntil(
-        '/welcome', // 👈 your Welcome route
-        (route) => false,
-      );
-    });
   }
 
   Widget _buildBottomAction() {
@@ -1021,8 +1039,8 @@ class _PaymentScreenState extends State<PaymentScreen>
   Widget _buildErrorOverlay() {
     final bool isTablet = MediaQuery.of(context).size.width > 600;
     final bool isTimeout = (errorMessage ?? "").toLowerCase().contains(
-      "timed out",
-    );
+          "timed out",
+        );
     return Positioned.fill(
       child: Material(
         color: Colors.black.withOpacity(0.25),
@@ -1087,40 +1105,31 @@ class _PaymentScreenState extends State<PaymentScreen>
                   SizedBox(height: isTablet ? 18 : 14),
                   ClipRRect(
                     borderRadius: BorderRadius.circular(10),
-                    child: TweenAnimationBuilder<double>(
-                      tween: Tween<double>(
-                        begin: _failProgress,
-                        end: _failProgressTarget,
-                      ),
-                      duration: const Duration(milliseconds: 450),
-                      onEnd: () {
-                        if (!mounted) return;
-                        if (_failProgress != _failProgressTarget) {
-                          setState(() => _failProgress = _failProgressTarget);
-                        }
-                      },
-                      builder: (_, value, __) {
-                        return Directionality(
-                          textDirection: TextDirection.rtl,
-                          child: LinearProgressIndicator(
-                            value: value.clamp(0, 1),
-                            minHeight: isTablet ? 10 : 8,
-                            backgroundColor: Colors.grey.shade200,
-                            valueColor: const AlwaysStoppedAnimation<Color>(
-                              Colors.redAccent,
-                            ),
+                    child: ValueListenableBuilder<double>(
+                      valueListenable: _failProgressNotifier,
+                      builder: (_, value, __) => Directionality(
+                        textDirection: TextDirection.rtl,
+                        child: LinearProgressIndicator(
+                          value: value.clamp(0, 1),
+                          minHeight: isTablet ? 10 : 8,
+                          backgroundColor: Colors.grey.shade200,
+                          valueColor: const AlwaysStoppedAnimation<Color>(
+                            Colors.redAccent,
                           ),
-                        );
-                      },
+                        ),
+                      ),
                     ),
                   ),
                   const SizedBox(height: 10),
-                  Text(
-                    "Returning to Welcome in ${_failSeconds}s",
-                    style: TextStyle(
-                      fontSize: isTablet ? 16 : 13,
-                      color: Colors.black54,
-                      fontWeight: FontWeight.w600,
+                  ValueListenableBuilder<int>(
+                    valueListenable: _failSecondsNotifier,
+                    builder: (_, seconds, __) => Text(
+                      "Returning to Welcome in ${seconds}s",
+                      style: TextStyle(
+                        fontSize: isTablet ? 16 : 13,
+                        color: Colors.black54,
+                        fontWeight: FontWeight.w600,
+                      ),
                     ),
                   ),
                 ],

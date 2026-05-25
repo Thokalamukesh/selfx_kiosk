@@ -1,6 +1,7 @@
 import 'package:api_selfxo_project/api/admin_api.dart';
 import 'package:api_selfxo_project/api/kiosk_api.dart';
 import 'package:api_selfxo_project/background_image/background_image.dart';
+import 'package:api_selfxo_project/core/kiosk_restaurant_meta.dart';
 import 'package:api_selfxo_project/core/order_utils.dart';
 import 'package:api_selfxo_project/core/receipt_print_mode.dart';
 import 'package:api_selfxo_project/printer/epson_usb_printer_service.dart';
@@ -51,21 +52,27 @@ class _RegisterKioskScreenState extends State<RegisterKioskScreen> {
       final savedName = prefs.getString("kiosk_name");
       final res = await AdminApi().getSettings();
       final data = res.data ?? {};
-        final settings =
-            (data["settings"] as Map?)?.cast<String, dynamic>() ?? {};
-        final restaurant =
-            (data["restaurant"] as Map?)?.cast<String, dynamic>() ?? {};
+      final settings =
+          (data["settings"] as Map?)?.cast<String, dynamic>() ?? {};
+      final restaurant =
+          (data["restaurant"] as Map?)?.cast<String, dynamic>() ?? {};
 
-        await ReceiptPrintMode.storeFromMap(settings);
-        await ReceiptPrintMode.storeFromMap(restaurant);
+      await ReceiptPrintMode.storeFromMap(settings);
+      await ReceiptPrintMode.storeFromMap(restaurant);
+      await KioskRestaurantMeta.storeFromMaps(
+        restaurant: restaurant,
+        kioskSettings: settings,
+      );
 
       if (!mounted) return;
       setState(() {
         _settingsData = settings;
-        restaurantName = restaurant["name"] ?? "Restaurant";
+        restaurantName = KioskRestaurantMeta.resolveRestaurantName(
+          restaurant: restaurant,
+          kioskSettings: settings,
+        );
         restaurantAddress = restaurant["address"]?.toString();
-        _kioskNameCtrl.text =
-            (savedName != null && savedName.trim().isNotEmpty)
+        _kioskNameCtrl.text = (savedName != null && savedName.trim().isNotEmpty)
             ? savedName.trim()
             : "";
         isLoading = false;
@@ -78,14 +85,18 @@ class _RegisterKioskScreenState extends State<RegisterKioskScreen> {
         final raw = res.data ?? {};
         final restaurant =
             (raw["restaurant"] as Map?)?.cast<String, dynamic>() ??
-            (raw as Map?)?.cast<String, dynamic>() ??
-            {};
-        final kioskSettings = (raw["kiosk_settings"] as Map?)
-            ?.cast<String, dynamic>();
+                (raw as Map?)?.cast<String, dynamic>() ??
+                {};
+        final kioskSettings =
+            (raw["kiosk_settings"] as Map?)?.cast<String, dynamic>();
         final branch = (raw["branch"] as Map?)?.cast<String, dynamic>();
 
         await ReceiptPrintMode.storeFromMap(kioskSettings);
         await ReceiptPrintMode.storeFromMap(restaurant);
+        await KioskRestaurantMeta.storeFromMaps(
+          restaurant: restaurant,
+          kioskSettings: kioskSettings,
+        );
 
         final mergedSettings = <String, dynamic>{};
         if (kioskSettings != null) {
@@ -93,8 +104,7 @@ class _RegisterKioskScreenState extends State<RegisterKioskScreen> {
         }
         final branchId = mergedSettings["branch_id"] ?? branch?["id"];
         if (branchId != null) mergedSettings["branch_id"] = branchId;
-        final restaurantId =
-            mergedSettings["restaurant_id"] ??
+        final restaurantId = mergedSettings["restaurant_id"] ??
             restaurant["restaurant_id"] ??
             restaurant["id"];
         if (restaurantId != null) {
@@ -103,15 +113,17 @@ class _RegisterKioskScreenState extends State<RegisterKioskScreen> {
 
         if (!mounted) return;
         setState(() {
-          _settingsData = mergedSettings.isNotEmpty
-              ? mergedSettings
-              : kioskSettings;
-          restaurantName = restaurant["name"] ?? "Restaurant";
+          _settingsData =
+              mergedSettings.isNotEmpty ? mergedSettings : kioskSettings;
+          restaurantName = KioskRestaurantMeta.resolveRestaurantName(
+            restaurant: restaurant,
+            kioskSettings: kioskSettings,
+          );
           restaurantAddress = restaurant["address"]?.toString();
           _kioskNameCtrl.text =
               (savedName != null && savedName.trim().isNotEmpty)
-              ? savedName.trim()
-              : "";
+                  ? savedName.trim()
+                  : "";
           isLoading = false;
         });
       } catch (_) {
@@ -139,6 +151,7 @@ class _RegisterKioskScreenState extends State<RegisterKioskScreen> {
       final body = <String, dynamic>{
         "name": name,
         "kiosk_name": name,
+        "kiosk_display_name": name,
         "device_name": name,
       };
       if (_settingsData != null) {
@@ -154,12 +167,15 @@ class _RegisterKioskScreenState extends State<RegisterKioskScreen> {
       await AdminApi().updateSettings(body);
       final prefs = await SharedPreferences.getInstance();
       await prefs.setString("kiosk_name", name);
+      await prefs.setString(KioskRestaurantMeta.kioskDisplayNameKey, name);
+      await prefs.setString(KioskRestaurantMeta.restaurantNameKey, name);
       _showSnackBar("Device name updated", Colors.green);
       if (mounted) {
         setState(() {
           _settingsData ??= {};
           _settingsData?["name"] = name;
           _settingsData?["kiosk_name"] = name;
+          _settingsData?["kiosk_display_name"] = name;
           _settingsData?["device_name"] = name;
         });
       }
@@ -167,6 +183,8 @@ class _RegisterKioskScreenState extends State<RegisterKioskScreen> {
     } catch (_) {
       final prefs = await SharedPreferences.getInstance();
       await prefs.setString("kiosk_name", name);
+      await prefs.setString(KioskRestaurantMeta.kioskDisplayNameKey, name);
+      await prefs.setString(KioskRestaurantMeta.restaurantNameKey, name);
       _showSnackBar("Saved locally.", Color(0xFF1B8E3E));
       OrderUtils.notifyInfoUpdated();
     } finally {
@@ -279,7 +297,6 @@ class _RegisterKioskScreenState extends State<RegisterKioskScreen> {
           style: TextStyle(fontWeight: FontWeight.bold, color: Colors.white),
         ),
       ),
-
       body: isLoading
           ? const Center(child: CircularProgressIndicator())
           : ListView(
@@ -311,9 +328,7 @@ class _RegisterKioskScreenState extends State<RegisterKioskScreen> {
                     ],
                   ),
                 ),
-
                 const SizedBox(height: 24),
-
                 _sectionTitle("Device Setup"),
                 _card(
                   child: Column(
@@ -374,9 +389,7 @@ class _RegisterKioskScreenState extends State<RegisterKioskScreen> {
                     ],
                   ),
                 ),
-
                 const SizedBox(height: 24),
-
                 _sectionTitle("Printer Setup"),
                 _card(
                   child: Column(
@@ -419,9 +432,7 @@ class _RegisterKioskScreenState extends State<RegisterKioskScreen> {
                     ],
                   ),
                 ),
-
                 const SizedBox(height: 32),
-
                 SizedBox(
                   height: 54,
                   child: ElevatedButton(

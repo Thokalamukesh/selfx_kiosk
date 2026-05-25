@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:api_selfxo_project/core/image_url.dart';
 
 class AppNetworkImage extends StatelessWidget {
   final String url;
@@ -28,7 +29,7 @@ class AppNetworkImage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    if (url.trim().isEmpty) return fallback;
+    if (!isSupportedRasterImageUrl(url)) return fallback;
     return Image.network(
       url,
       fit: fit,
@@ -38,6 +39,7 @@ class AppNetworkImage extends StatelessWidget {
       cacheWidth: cacheWidth,
       cacheHeight: cacheHeight,
       gaplessPlayback: gaplessPlayback,
+      filterQuality: FilterQuality.low,
       errorBuilder: (_, __, ___) => fallback,
     );
   }

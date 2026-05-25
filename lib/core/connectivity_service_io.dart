@@ -23,8 +23,10 @@ class ConnectivityService {
   bool? _cachedInternetReachable;
   int _reachabilityFailures = 0;
 
-  static const Duration _pollInterval = Duration(seconds: 10);
-  static const Duration _minInternetCheckInterval = Duration(seconds: 8);
+  // Connectivity changes are still handled immediately by the platform stream;
+  // this slower poll is only a safety net and avoids needless socket work.
+  static const Duration _pollInterval = Duration(seconds: 30);
+  static const Duration _minInternetCheckInterval = Duration(seconds: 20);
   static const int _failThreshold = 2;
 
   void start() {
@@ -48,8 +50,8 @@ class ConnectivityService {
 
     _subscription?.cancel();
     _subscription = Connectivity().onConnectivityChanged.listen(
-      _handleConnectivityChange,
-    );
+          _handleConnectivityChange,
+        );
 
     _pollTimer?.cancel();
     _pollTimer = Timer.periodic(_pollInterval, (_) {

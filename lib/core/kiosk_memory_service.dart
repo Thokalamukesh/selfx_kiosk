@@ -78,9 +78,16 @@ class KioskMemoryService {
   void _maybeClearImageCache() {
     final now = DateTime.now();
     if (now.difference(_lastActivity) < _activityCooldown) return;
-    SchedulerBinding.instance.addPostFrameCallback((_) {
-      PaintingBinding.instance.imageCache.clear();
-      PaintingBinding.instance.imageCache.clearLiveImages();
-    });
+    // Cache clearing can be surprisingly expensive and can cause a burst of
+    // image re-decodes. Run it as idle work and only when there is enough cache
+    // pressure to justify the cleanup.
+    SchedulerBinding.instance.scheduleTask<void>(() {
+      final cache = PaintingBinding.instance.imageCache;
+      if (cache.currentSizeBytes < (32 << 20) && cache.currentSize < 80) {
+        return;
+      }
+      cache.clear();
+      cache.clearLiveImages();
+    }, Priority.idle);
   }
 }

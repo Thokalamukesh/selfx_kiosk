@@ -198,7 +198,7 @@ class _MainNavigationState extends State<MainNavigation>
       ]);
       final bool catActive = catActiveRaw == null || isTruthy(catActiveRaw);
       if (!catActive) continue;
-      final String catName = category["category_name"] ?? "Others";
+      final String catName = category["category_name"] ?? "";
       final List items = (category["items"] as List? ?? [])
           .map((e) => Map<String, dynamic>.from(e))
           .toList();
@@ -698,7 +698,7 @@ class _MainNavigationState extends State<MainNavigation>
   }) {
     if (!mounted) return;
     final normalizedImageUrl = normalizeImageUrl(imageUrl);
-    if (normalizedImageUrl.isEmpty) {
+    if (!isSupportedRasterImageUrl(normalizedImageUrl)) {
       _finishFlyAnimation(force: true);
       return;
     }

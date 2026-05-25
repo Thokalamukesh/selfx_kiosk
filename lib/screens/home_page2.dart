@@ -452,7 +452,7 @@ class _HomePage2State extends State<HomePage2> with TickerProviderStateMixin {
             (p) => ProductModel(
               id: p["id"],
               name: p["name"] ?? "",
-              category: p["category"] ?? "Others",
+              category: p["category"] ?? "",
               price: int.tryParse(p["price"].toString()) ?? 0,
               image: normalizeImageUrlValue(p["image"]),
               type: p["type"],
@@ -462,11 +462,12 @@ class _HomePage2State extends State<HomePage2> with TickerProviderStateMixin {
 
       final tempCategories = List<String>.from(
         parsed["categories"] ?? const <String>[],
-      );
+      ).where(_isVisibleCategoryName).toList();
       if (_productOverrides.isNotEmpty) {
         final overrideCats = _productOverrides.values
             .map((o) => _categoryLabel(o["category_name"] ?? o["category"]))
             .where((o) => o.trim().isNotEmpty)
+            .where(_isVisibleCategoryName)
             .where((o) => !hiddenCategoryKeys.contains(_categoryKey(o)))
             .toSet();
         for (final c in overrideCats) {
@@ -591,7 +592,7 @@ class _HomePage2State extends State<HomePage2> with TickerProviderStateMixin {
     final productsToCache = allProducts.take(maxItems);
     for (final p in productsToCache) {
       final url = p.image.trim();
-      if (url.isNotEmpty) {
+      if (isSupportedRasterImageUrl(url)) {
         precacheImage(
           NetworkImage(url),
           context,
@@ -603,7 +604,7 @@ class _HomePage2State extends State<HomePage2> with TickerProviderStateMixin {
     for (final url in categoryImages.values) {
       if (cached >= 8) break;
       final u = url.trim();
-      if (u.isEmpty) continue;
+      if (!isSupportedRasterImageUrl(u)) continue;
       precacheImage(
         NetworkImage(u),
         context,
@@ -803,7 +804,7 @@ class _HomePage2State extends State<HomePage2> with TickerProviderStateMixin {
     return int.tryParse(raw?.toString() ?? "");
   }
 
-  String _categoryLabel(dynamic raw, {String fallback = "Others"}) {
+  String _categoryLabel(dynamic raw, {String fallback = ""}) {
     if (raw is Map) {
       final nested = raw["category_name"] ??
           raw["name"] ??
@@ -834,6 +835,26 @@ class _HomePage2State extends State<HomePage2> with TickerProviderStateMixin {
     }
 
     return text;
+  }
+
+  bool _isVisibleCategoryName(String category) {
+    final key = category.trim().toLowerCase();
+    final normalized = key.replaceAll(RegExp(r"[^a-z0-9]"), "");
+    const hiddenNames = {
+      "other",
+      "others",
+      "othercategory",
+      "othercategories",
+      "otherscategory",
+      "otherscategories",
+      "unknown",
+      "unknowncategory",
+      "unknowncategories",
+      "uncategorized",
+    };
+    return key.isNotEmpty &&
+        normalized.isNotEmpty &&
+        !hiddenNames.contains(normalized);
   }
 
   void _applyOverridesToRawProducts(List rawProducts) {
@@ -979,7 +1000,7 @@ class _HomePage2State extends State<HomePage2> with TickerProviderStateMixin {
       if (!_isProductEntryAvailable(o)) continue;
       final categoryName = _categoryLabel(
         o["category_name"] ?? o["category"],
-        fallback: "Others",
+        fallback: "",
       );
       if (hiddenCategoryKeys.contains(_categoryKey(categoryName))) continue;
       final name = (o["item_name"] ?? o["name"] ?? "").toString();
@@ -2464,6 +2485,59 @@ Map<String, dynamic> _parseProductsIsolate(List<dynamic> raw) {
     return null;
   }
 
+  String categoryLabel(dynamic raw) {
+    if (raw is Map) {
+      final nested = raw["category_name"] ??
+          raw["name"] ??
+          raw["category"] ??
+          raw["title"];
+      if (!identical(nested, raw)) {
+        return categoryLabel(nested);
+      }
+    }
+
+    final text = raw?.toString().trim() ?? "";
+    if (text.isEmpty) return "";
+
+    if (text.startsWith("{") && text.endsWith("}")) {
+      final categoryMatch = RegExp(
+        r"category_name\s*:\s*([^,}]+)",
+      ).firstMatch(text);
+      if (categoryMatch != null) {
+        final value = categoryMatch.group(1)?.trim() ?? "";
+        if (value.isNotEmpty) return value;
+      }
+
+      final nameMatch = RegExp(r"name\s*:\s*([^,}]+)").firstMatch(text);
+      if (nameMatch != null) {
+        final value = nameMatch.group(1)?.trim() ?? "";
+        if (value.isNotEmpty) return value;
+      }
+    }
+
+    return text;
+  }
+
+  bool isVisibleCategoryName(String category) {
+    final key = category.trim().toLowerCase();
+    final normalized = key.replaceAll(RegExp(r"[^a-z0-9]"), "");
+    const hiddenNames = {
+      "other",
+      "others",
+      "othercategory",
+      "othercategories",
+      "otherscategory",
+      "otherscategories",
+      "unknown",
+      "unknowncategory",
+      "unknowncategories",
+      "uncategorized",
+    };
+    return key.isNotEmpty &&
+        normalized.isNotEmpty &&
+        !hiddenNames.contains(normalized);
+  }
+
   int toInt(dynamic value) {
     if (value is int) return value;
     return int.tryParse(value?.toString() ?? "") ?? 0;
@@ -2518,13 +2592,18 @@ Map<String, dynamic> _parseProductsIsolate(List<dynamic> raw) {
     final bool catActive = truthyStatus(rawCategoryActive) ?? true;
     if (!catActive) continue;
 
-    final String catName = category["category_name"]?.toString() ?? "Others";
+    final String catName = categoryLabel(
+      category["category_name"] ??
+          category["name"] ??
+          category["category"] ??
+          category["title"],
+    );
     final String catImage = category["item_photo_url"]?.toString() ??
         category["category_image"]?.toString() ??
         category["image"]?.toString() ??
         "";
 
-    if (catImage.isNotEmpty) {
+    if (catName.isNotEmpty && catImage.isNotEmpty) {
       categoryImages[catName] = normalizeImageUrl(catImage);
     }
 
@@ -2634,7 +2713,9 @@ Map<String, dynamic> _parseProductsIsolate(List<dynamic> raw) {
         "type": ProductModel.normalizeType(rawType),
       });
 
-      categories.add(catName);
+      if (isVisibleCategoryName(catName)) {
+        categories.add(catName);
+      }
     }
   }
 

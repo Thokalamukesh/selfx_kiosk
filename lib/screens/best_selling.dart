@@ -34,12 +34,12 @@ class BestSellingWidget extends StatefulWidget {
 }
 
 class _BestSellingWidgetState extends State<BestSellingWidget> {
-  PageController _pageController = PageController(viewportFraction: 0.78);
+  PageController _pageController = PageController(viewportFraction: 0.86);
   int currentIndex = 0;
   List<ProductModel> displayedProducts = [];
   final Map<int, int> qtyMap = {};
   Timer? _autoScrollTimer;
-  double _viewportFraction = 0.78;
+  double _viewportFraction = 0.86;
   VoidCallback? _maintenanceListener;
 
   static const Color kGreen = Colors.green;
@@ -73,24 +73,13 @@ class _BestSellingWidgetState extends State<BestSellingWidget> {
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
-    final bool isTablet = MediaQuery.of(context).size.width > 600;
-    final double nextFraction = isTablet ? 0.42 : 0.78;
-    if (_viewportFraction != nextFraction) {
-      _viewportFraction = nextFraction;
-      final int page = currentIndex;
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (!mounted) return;
-        final oldController = _pageController;
-        _pageController = PageController(
-          viewportFraction: _viewportFraction,
-          initialPage: page,
-        );
-        oldController.dispose();
-        if (mounted) {
-          setState(() {});
-        }
-      });
-    }
+    final media = MediaQuery.of(context);
+    _scheduleViewportFraction(
+      _viewportFractionForWidth(
+        media.size.width,
+        orientation: media.orientation,
+      ),
+    );
   }
 
   @override
@@ -182,10 +171,9 @@ class _BestSellingWidgetState extends State<BestSellingWidget> {
   Widget build(BuildContext context) {
     if (displayedProducts.isEmpty) return const SizedBox();
 
-    final double screenWidth = MediaQuery.of(context).size.width;
-    final bool isTablet = screenWidth > 600;
-    // ✅ TABLET → EXACTLY 2 ITEMS
-    // Controller is managed in didChangeDependencies.
+    final media = MediaQuery.of(context);
+    final double screenWidth = media.size.width;
+    final bool isTablet = screenWidth >= 600;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -238,21 +226,26 @@ class _BestSellingWidgetState extends State<BestSellingWidget> {
         LayoutBuilder(
           builder: (context, constraints) {
             final availableWidth = constraints.maxWidth;
-            final isCompactPhone = !isTablet && availableWidth < 300;
-            final isWidePhone = !isTablet && availableWidth >= 360;
-            final bannerHeight = isTablet
-                ? 178.0
-                : isCompactPhone
-                    ? 116.0
-                    : isWidePhone
-                        ? 132.0
-                        : 124.0;
+            _scheduleViewportFraction(
+              _viewportFractionForWidth(
+                availableWidth,
+                orientation: media.orientation,
+              ),
+            );
+
+            final bannerHeight = _bannerHeightForWidth(
+              availableWidth,
+              orientation: media.orientation,
+            );
 
             return Padding(
-              padding: EdgeInsets.all(isTablet ? 10 : 8),
+              padding: EdgeInsets.symmetric(
+                horizontal: isTablet ? 10 : 8,
+                vertical: isTablet ? 8 : 6,
+              ),
               child: Container(
                 width: double.infinity,
-                padding: EdgeInsets.symmetric(vertical: isTablet ? 10 : 6),
+                padding: EdgeInsets.symmetric(vertical: isTablet ? 8 : 5),
                 decoration: BoxDecoration(
                   color: Colors.transparent,
                   borderRadius: BorderRadius.circular(18),
@@ -263,7 +256,7 @@ class _BestSellingWidgetState extends State<BestSellingWidget> {
                       height: bannerHeight,
                       child: PageView.builder(
                         key: ValueKey(
-                          "best-selling-${isTablet ? 'tablet' : 'mobile'}-$_viewportFraction",
+                          "best-selling-${isTablet ? 'tablet' : 'mobile'}-${_viewportFraction.toStringAsFixed(3)}",
                         ),
                         controller: _pageController,
                         padEnds: false,
@@ -294,15 +287,50 @@ class _BestSellingWidgetState extends State<BestSellingWidget> {
     );
   }
 
-  double _responsiveValue({
-    required double width,
-    required double small,
-    required double large,
-    double smallAt = 210,
-    double largeAt = 300,
+  double _viewportFractionForWidth(
+    double width, {
+    required Orientation orientation,
   }) {
-    final t = ((width - smallAt) / (largeAt - smallAt)).clamp(0.0, 1.0);
-    return small + ((large - small) * t);
+    if (width < 340) return 0.92;
+    if (width < 600) return 0.84;
+    if (width < 760) return orientation == Orientation.landscape ? 0.70 : 0.66;
+    if (width < 980) return orientation == Orientation.landscape ? 0.54 : 0.58;
+    if (width < 1280) return orientation == Orientation.landscape ? 0.43 : 0.48;
+    return orientation == Orientation.landscape ? 0.36 : 0.40;
+  }
+
+  double _bannerHeightForWidth(
+    double width, {
+    required Orientation orientation,
+  }) {
+    // Height grows independently from viewport fraction so tablet cards have
+    // enough vertical room for title, price, variants text, and action button.
+    if (width < 340) return 142;
+    if (width < 600) return _responsiveClamp(width * 0.40, 148, 162);
+    if (width < 760) return _responsiveClamp(width * 0.28, 174, 196);
+    if (width < 980) return _responsiveClamp(width * 0.23, 194, 214);
+    if (width < 1280) {
+      return orientation == Orientation.landscape
+          ? _responsiveClamp(width * 0.18, 206, 226)
+          : _responsiveClamp(width * 0.20, 210, 232);
+    }
+    return _responsiveClamp(width * 0.16, 224, 248);
+  }
+
+  void _scheduleViewportFraction(double nextFraction) {
+    if ((_viewportFraction - nextFraction).abs() < 0.001) return;
+    _viewportFraction = nextFraction;
+    final int page = currentIndex;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      final oldController = _pageController;
+      _pageController = PageController(
+        viewportFraction: _viewportFraction,
+        initialPage: page.clamp(0, max(displayedProducts.length - 1, 0)),
+      );
+      oldController.dispose();
+      if (mounted) setState(() {});
+    });
   }
 
   double _responsiveClamp(double value, double min, double max) {
@@ -342,19 +370,57 @@ class _BestSellingWidgetState extends State<BestSellingWidget> {
     return LayoutBuilder(
       builder: (context, constraints) {
         final cardWidth = constraints.maxWidth;
-        final imagePanelWidth = isTablet
-            ? _responsiveClamp(cardWidth * 0.48, 180, 250)
-            : _responsiveClamp(cardWidth * 0.52, 108, 150);
-        final leftPadding = isTablet
-            ? _responsiveClamp(cardWidth * 0.06, 18, 26)
-            : _responsiveValue(width: cardWidth, small: 10, large: 14);
-        final rightPadding = imagePanelWidth + (isTablet ? 12 : 8);
+        final cardHeight = constraints.maxHeight;
+        final bool compactCard = cardWidth < 340;
+        final bool largeCard = cardWidth >= 520;
+        final bool landscapeTablet = isTablet &&
+            MediaQuery.of(context).orientation == Orientation.landscape;
+
+        // The image is a real right-side region, not an overlay. This prevents
+        // tablet images from covering the title, price, or button.
+        final imageFraction = isTablet
+            ? (landscapeTablet || largeCard ? 0.34 : 0.36)
+            : (compactCard ? 0.38 : 0.40);
+        final maxImageWidth = cardWidth * (isTablet ? 0.40 : 0.43);
+        final minImageWidth = min(compactCard ? 104.0 : 118.0, maxImageWidth);
+        final imagePanelWidth = _responsiveClamp(
+          cardWidth * imageFraction,
+          minImageWidth,
+          maxImageWidth,
+        );
+
+        final contentHorizontalPadding = isTablet
+            ? _responsiveClamp(cardWidth * 0.045, 16, 24)
+            : _responsiveClamp(cardWidth * 0.040, 10, 14);
+        final verticalPadding = isTablet
+            ? _responsiveClamp(cardHeight * 0.085, 15, 22)
+            : _responsiveClamp(cardHeight * 0.070, 9, 13);
+        final contentWidth = max(
+          0.0,
+          cardWidth - imagePanelWidth - (contentHorizontalPadding * 2),
+        );
         final titleFont = isTablet
-            ? _responsiveClamp(cardWidth * 0.048, 18, 22)
-            : _responsiveClamp(cardWidth * 0.062, 12, 14.5);
+            ? _responsiveClamp(contentWidth * 0.082, 16, 21)
+            : _responsiveClamp(contentWidth * 0.086, 12, 15);
         final priceFont = isTablet
-            ? _responsiveClamp(cardWidth * 0.052, 19, 23)
-            : _responsiveClamp(cardWidth * 0.068, 14, 16);
+            ? _responsiveClamp(contentWidth * 0.088, 18, 23)
+            : _responsiveClamp(contentWidth * 0.095, 14, 17);
+        final variantFont = isTablet
+            ? _responsiveClamp(contentWidth * 0.045, 9.5, 11.5)
+            : _responsiveClamp(contentWidth * 0.045, 7.5, 9);
+        final contentGap = isTablet
+            ? _responsiveClamp(cardHeight * 0.035, 6, 10)
+            : _responsiveClamp(cardHeight * 0.030, 3, 6);
+        final maxActionWidth = min(contentWidth, isTablet ? 142.0 : 112.0);
+        final minActionWidth = min(compactCard ? 78.0 : 92.0, maxActionWidth);
+        final actionWidth = _responsiveClamp(
+          contentWidth * (isTablet ? 0.58 : 0.62),
+          minActionWidth,
+          maxActionWidth,
+        );
+        final actionHeight = isTablet
+            ? _responsiveClamp(cardHeight * 0.19, 38, 44)
+            : _responsiveClamp(cardHeight * 0.21, 29, 34);
 
         return Container(
           margin: EdgeInsets.symmetric(horizontal: isTablet ? 8 : 4),
@@ -371,13 +437,89 @@ class _BestSellingWidgetState extends State<BestSellingWidget> {
           ),
           child: ClipRRect(
             borderRadius: BorderRadius.circular(20),
-            child: Stack(
+            child: Row(
               children: [
-                Positioned(
-                  top: 0,
-                  right: 0,
-                  bottom: 0,
+                Expanded(
+                  child: Padding(
+                    padding: EdgeInsets.fromLTRB(
+                      contentHorizontalPadding,
+                      verticalPadding,
+                      contentHorizontalPadding * 0.75,
+                      verticalPadding,
+                    ),
+                    // Flexible title and fixed price/action keep every element
+                    // visible even on compact phone widths and wide tablet cards.
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Flexible(
+                          child: Align(
+                            alignment: Alignment.centerLeft,
+                            child: Text(
+                              p.name,
+                              maxLines: compactCard ? 2 : 3,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                color: const Color(0xFF1A1A1A),
+                                fontWeight: FontWeight.w900,
+                                fontSize: titleFont,
+                                height: 1.08,
+                              ),
+                            ),
+                          ),
+                        ),
+                        SizedBox(height: contentGap),
+                        Text(
+                          "₹${p.price}",
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            color: _brandColor,
+                            fontSize: priceFont,
+                            fontWeight: FontWeight.w900,
+                            height: 1.0,
+                          ),
+                        ),
+                        if (needsCustomization) ...[
+                          SizedBox(height: contentGap * 0.35),
+                          Text(
+                            "Variants Available",
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              fontSize: variantFont,
+                              color: const Color(0xFFB46622),
+                              fontWeight: FontWeight.w800,
+                              height: 1.0,
+                            ),
+                          ),
+                        ],
+                        SizedBox(height: contentGap),
+                        qty == 0
+                            ? _addButton(
+                                handleAdd,
+                                isTablet,
+                                cardWidth: cardWidth,
+                                width: actionWidth,
+                                height: actionHeight,
+                              )
+                            : _counter(
+                                p,
+                                qty,
+                                isTablet,
+                                () => _rectFromContext(imageContext),
+                                cardWidth: cardWidth,
+                                width: actionWidth,
+                                height: actionHeight,
+                              ),
+                      ],
+                    ),
+                  ),
+                ),
+                SizedBox(
                   width: imagePanelWidth,
+                  height: double.infinity,
                   child: Stack(
                     children: [
                       Positioned.fill(
@@ -392,66 +534,6 @@ class _BestSellingWidgetState extends State<BestSellingWidget> {
                         left: isTablet ? 12 : 8,
                         child: _vegIcon(p.isVeg),
                       ),
-                    ],
-                  ),
-                ),
-                Padding(
-                  padding: EdgeInsets.fromLTRB(
-                    leftPadding,
-                    isTablet ? 18 : 10,
-                    rightPadding,
-                    isTablet ? 14 : 9,
-                  ),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      SizedBox(height: isTablet ? 8 : 5),
-                      Text(
-                        p.name,
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                          color: const Color(0xFF1A1A1A),
-                          fontWeight: FontWeight.w900,
-                          fontSize: titleFont,
-                          height: 1.05,
-                        ),
-                      ),
-                      SizedBox(height: isTablet ? 7 : 4),
-                      Text(
-                        "₹${p.price}",
-                        style: TextStyle(
-                          color: _brandColor,
-                          fontSize: priceFont,
-                          fontWeight: FontWeight.w900,
-                        ),
-                      ),
-                      if (needsCustomization)
-                        Padding(
-                          padding: const EdgeInsets.only(top: 1),
-                          child: Text(
-                            "Variants Available",
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: TextStyle(
-                              fontSize: isTablet ? 10 : 8,
-                              color: const Color(0xFFB46622),
-                              fontWeight: FontWeight.w800,
-                            ),
-                          ),
-                        ),
-                      SizedBox(height: isTablet ? 10 : 6),
-                      qty == 0
-                          ? _addButton(handleAdd, isTablet,
-                              cardWidth: cardWidth)
-                          : _counter(
-                              p,
-                              qty,
-                              isTablet,
-                              () => _rectFromContext(imageContext),
-                              cardWidth: cardWidth,
-                            ),
                     ],
                   ),
                 ),
@@ -530,16 +612,12 @@ class _BestSellingWidgetState extends State<BestSellingWidget> {
     VoidCallback onTap,
     bool isTablet, {
     required double cardWidth,
+    required double width,
+    required double height,
   }) {
-    final buttonWidth = isTablet
-        ? _responsiveClamp(cardWidth * 0.30, 118, 138)
-        : _responsiveClamp(cardWidth * 0.38, 76, 94);
-    final buttonHeight =
-        isTablet ? 42.0 : _responsiveClamp(cardWidth * 0.13, 28, 32);
-
     return SizedBox(
-      width: buttonWidth,
-      height: buttonHeight,
+      width: width,
+      height: height,
       child: Material(
         color: Colors.transparent,
         borderRadius: BorderRadius.circular(isTablet ? 11 : 8),
@@ -559,14 +637,17 @@ class _BestSellingWidgetState extends State<BestSellingWidget> {
               ],
             ),
             child: Center(
-              child: Text(
-                "Order Now",
-                style: TextStyle(
-                  color: Colors.white,
-                  fontWeight: FontWeight.w900,
-                  fontSize: isTablet
-                      ? 14
-                      : _responsiveClamp(cardWidth * 0.044, 9.5, 11),
+              child: FittedBox(
+                fit: BoxFit.scaleDown,
+                child: Text(
+                  "Order Now",
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontWeight: FontWeight.w900,
+                    fontSize: isTablet
+                        ? _responsiveClamp(cardWidth * 0.032, 12, 14)
+                        : _responsiveClamp(cardWidth * 0.040, 9.5, 11.5),
+                  ),
                 ),
               ),
             ),
@@ -582,15 +663,12 @@ class _BestSellingWidgetState extends State<BestSellingWidget> {
     bool isTablet,
     Rect? Function() imageRectBuilder, {
     required double cardWidth,
+    required double width,
+    required double height,
   }) {
-    final double buttonHeight =
-        isTablet ? 40 : _responsiveClamp(cardWidth * 0.13, 28, 32);
-    final double counterWidth = isTablet
-        ? _responsiveClamp(cardWidth * 0.30, 118, 138)
-        : _responsiveClamp(cardWidth * 0.38, 76, 94);
     return SizedBox(
-      height: buttonHeight,
-      width: counterWidth,
+      height: height,
+      width: width,
       child: Container(
         decoration: BoxDecoration(
           color: const Color(0xFFFFE1D2),
@@ -620,7 +698,7 @@ class _BestSellingWidgetState extends State<BestSellingWidget> {
                 },
                 backgroundColor: Colors.red,
                 textColor: Colors.white,
-                height: buttonHeight,
+                height: height,
                 isTablet: isTablet,
               ),
             ),
@@ -657,7 +735,7 @@ class _BestSellingWidgetState extends State<BestSellingWidget> {
                 },
                 backgroundColor: kGreen,
                 textColor: Colors.white,
-                height: buttonHeight,
+                height: height,
                 isTablet: isTablet,
               ),
             ),

@@ -1,4 +1,5 @@
 import 'package:dio/dio.dart';
+import 'package:api_selfxo_project/core/kiosk_restaurant_meta.dart';
 import 'package:api_selfxo_project/core/kiosk_log.dart';
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -11,7 +12,9 @@ class KioskApi {
   // =========================================================
   Future<Response> getRestaurantData() async {
     final dio = await DioClient.getAuthedDio();
-    return dio.get("kiosks/getRestaurantData");
+    final res = await dio.get("kiosks/getRestaurantData");
+    await KioskRestaurantMeta.storeFromResponse(res.data);
+    return res;
   }
 
   Future<List<Map<String, dynamic>>> getAllRestaurantsWeb() async {
@@ -68,8 +71,8 @@ class KioskApi {
     final rawList = raw is List
         ? raw
         : raw is Map
-        ? (raw["data"] ?? raw["restaurants"] ?? raw["items"])
-        : null;
+            ? (raw["data"] ?? raw["restaurants"] ?? raw["items"])
+            : null;
     if (rawList is! List) return const [];
 
     return rawList

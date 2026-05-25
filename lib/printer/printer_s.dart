@@ -1574,7 +1574,12 @@ class PrinterService {
     return printObject.where((entry) {
       if (entry is Map && entry['type'] == 'text') {
         final text = entry['text']?.toString().toLowerCase() ?? '';
-        if (text.contains('sgst') || text.contains('igst')) {
+        final normalized = text.replaceAll(RegExp(r'\s+'), ' ').trim();
+        if (normalized.startsWith('gst') ||
+            normalized.startsWith('tax') ||
+            text.contains('sgst') ||
+            text.contains('cgst') ||
+            text.contains('igst')) {
           return false;
         }
       }
@@ -1900,7 +1905,7 @@ List<Map<String, dynamic>> _buildReceiptIsolate(
       }
     }
 
-    if (taxId?.isNotEmpty == true) {
+    if (!removeTaxLines && taxId?.isNotEmpty == true) {
       add(center("GST: $taxId"), align: 1);
     }
 
@@ -2694,7 +2699,7 @@ List<Map<String, dynamic>> _buildUsbReceiptIsolate(
       }
     }
 
-    if (taxId?.isNotEmpty == true) {
+    if (!removeTaxLines && taxId?.isNotEmpty == true) {
       text(center("GST: $taxId"), align: 1);
     }
 

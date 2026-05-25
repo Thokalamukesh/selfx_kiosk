@@ -1,8 +1,8 @@
 import 'package:api_selfxo_project/background_image/background_image.dart';
-import 'package:api_selfxo_project/core/logout_helper.dart';
 import 'package:api_selfxo_project/printer/epson_usb_printer_service.dart';
 import 'package:api_selfxo_project/printer/printer_s.dart';
 import 'package:api_selfxo_project/core/receipt_print_mode.dart';
+import 'package:api_selfxo_project/core/kiosk_restaurant_meta.dart';
 import 'package:api_selfxo_project/api/admin_api.dart';
 import 'package:api_selfxo_project/core/order_utils.dart';
 import 'package:flutter/material.dart';
@@ -10,7 +10,6 @@ import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:api_selfxo_project/api/kiosk_api.dart';
 import 'package:url_launcher/url_launcher.dart';
-import 'package:api_selfxo_project/core/kiosk_log.dart';
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
@@ -166,16 +165,24 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
       await ReceiptPrintMode.storeFromMap(settings);
       await ReceiptPrintMode.storeFromMap(restaurant);
+      await KioskRestaurantMeta.storeFromMaps(
+        restaurant: restaurant,
+        kioskSettings: settings,
+      );
 
       if (!mounted) return;
       setState(() {
         _settingsData = settings;
-        restaurantName = restaurant["name"] ?? "Restaurant";
+        restaurantName = KioskRestaurantMeta.resolveRestaurantName(
+          restaurant: restaurant,
+          kioskSettings: settings,
+        );
         restaurantAddress = restaurant["address"]?.toString();
         final savedName = prefs.getString("kiosk_name");
         kioskName = (savedName != null && savedName.trim().isNotEmpty)
             ? savedName.trim()
-            : (settings["name"] ??
+            : (settings["kiosk_display_name"] ??
+                settings["name"] ??
                 settings["kiosk_name"] ??
                 restaurant["kiosk_name"] ??
                 "SELFX Kiosk");
@@ -185,16 +192,25 @@ class _SettingsScreenState extends State<SettingsScreen> {
     } catch (_) {
       try {
         final res = await KioskApi().getRestaurantData();
-        final data = res.data['restaurant'] ?? res.data;
+        final bundle = KioskRestaurantMeta.extractBundle(res.data);
+        final data = bundle.restaurant ?? bundle.root ?? {};
 
         if (!mounted) return;
         setState(() {
-          restaurantName = data["name"] ?? "Restaurant";
+          restaurantName = KioskRestaurantMeta.resolveRestaurantName(
+            root: bundle.root,
+            data: bundle.data,
+            restaurant: bundle.restaurant,
+            kioskSettings: bundle.kioskSettings,
+          );
           restaurantAddress = data["address"]?.toString();
           final savedName = prefs.getString("kiosk_name");
           kioskName = (savedName != null && savedName.trim().isNotEmpty)
               ? savedName.trim()
-              : (data["kiosk_name"] ?? "SELFX Kiosk");
+              : (bundle.kioskSettings?["kiosk_display_name"] ??
+                  data["kiosk_display_name"] ??
+                  data["kiosk_name"] ??
+                  "SELFX Kiosk");
           _kioskNameCtrl.text = kioskName;
           isLoading = false;
         });
@@ -387,6 +403,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       final body = <String, dynamic>{
         "name": name,
         "kiosk_name": name,
+        "kiosk_display_name": name,
         "device_name": name,
       };
       if (_settingsData != null) {
@@ -401,14 +418,25 @@ class _SettingsScreenState extends State<SettingsScreen> {
       }
       await AdminApi().updateSettings(body);
       if (!mounted) return;
-      setState(() => kioskName = name);
+      setState(() {
+        kioskName = name;
+        _settingsData ??= {};
+        _settingsData?["name"] = name;
+        _settingsData?["kiosk_name"] = name;
+        _settingsData?["kiosk_display_name"] = name;
+        _settingsData?["device_name"] = name;
+      });
       final prefs = await SharedPreferences.getInstance();
       await prefs.setString("kiosk_name", name);
+      await prefs.setString(KioskRestaurantMeta.kioskDisplayNameKey, name);
+      await prefs.setString(KioskRestaurantMeta.restaurantNameKey, name);
       OrderUtils.notifyInfoUpdated();
       _showSnackBar("Kiosk name updated", Colors.green);
     } catch (e) {
       final prefs = await SharedPreferences.getInstance();
       await prefs.setString("kiosk_name", name);
+      await prefs.setString(KioskRestaurantMeta.kioskDisplayNameKey, name);
+      await prefs.setString(KioskRestaurantMeta.restaurantNameKey, name);
       OrderUtils.notifyInfoUpdated();
       _showSnackBar("Failed to update name", Colors.red);
     } finally {

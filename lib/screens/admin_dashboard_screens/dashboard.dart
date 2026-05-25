@@ -1631,7 +1631,8 @@ class _DashboardTabState extends State<DashboardTab> {
     final toLabel = DateFormat('yyyy-MM-dd').format(end);
     final restaurantName = await _resolveRestaurantName();
     final address = info["address"] != null ? info["address"].toString() : null;
-    final taxId = info["tax_id"]?.toString();
+    final showTaxInReceipt = info["show_tax_in_receipt"] == true;
+    final taxId = showTaxInReceipt ? info["tax_id"]?.toString() : null;
 
     try {
       await _printerService.printItemSalesReport(
@@ -2026,7 +2027,8 @@ class _DashboardTabState extends State<DashboardTab> {
     final parcelTotal = _extractParcelTotal(res.data, items);
     final restaurantName = await _resolveRestaurantName();
     final address = info["address"] != null ? info["address"].toString() : null;
-    final taxId = info["tax_id"]?.toString();
+    final showTaxInReceipt = info["show_tax_in_receipt"] == true;
+    final taxId = showTaxInReceipt ? info["tax_id"]?.toString() : null;
     await _printerService.printOrder(
       orderId: orderId,
       cartItems: items,
@@ -2038,7 +2040,7 @@ class _DashboardTabState extends State<DashboardTab> {
       paymentMode: parsed.paymentMode,
       taxAmount: parsed.taxAmount,
       discountAmount: parsed.discountAmount,
-      removeTaxLines: true,
+      removeTaxLines: !showTaxInReceipt,
       parcelTotalOverride: parcelTotal,
     );
   }

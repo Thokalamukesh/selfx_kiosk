@@ -4,7 +4,10 @@ import 'package:api_selfxo_project/core/kiosk_bootstrap.dart';
 import 'package:api_selfxo_project/core/kiosk_config.dart';
 import 'package:api_selfxo_project/core/kiosk_memory_service.dart';
 import 'package:api_selfxo_project/core/connectivity_service.dart';
+import 'package:api_selfxo_project/core/kiosk_restaurant_meta.dart';
+import 'package:api_selfxo_project/core/order_utils.dart';
 import 'package:api_selfxo_project/core/receipt_print_mode.dart';
+import 'package:api_selfxo_project/core/image_url.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -27,6 +30,7 @@ class _WelcomeScreenState extends State<WelcomeScreen>
   Timer? _adminTapResetTimer;
   VoidCallback? _maintenanceListener;
   VoidCallback? _mediaRefreshListener;
+  VoidCallback? _restaurantInfoListener;
   int _mediaRefreshKey = 0;
 
   bool isLoading = true;
@@ -69,6 +73,9 @@ class _WelcomeScreenState extends State<WelcomeScreen>
     }
 
     _loadRestaurant();
+
+    _restaurantInfoListener = _handleRestaurantInfoUpdated;
+    OrderUtils.infoRevision.addListener(_restaurantInfoListener!);
 
     ConnectivityService.instance.start();
     _onlineListener = () {
@@ -113,9 +120,9 @@ class _WelcomeScreenState extends State<WelcomeScreen>
     _loadingRestaurant = true;
     try {
       await DeviceBootstrap.ensureDeviceReady();
-      final res = await KioskApi().getRestaurantData();
-
       final prefs = await SharedPreferences.getInstance();
+      final savedDisplayName = _storedDisplayName(prefs);
+      final res = await KioskApi().getRestaurantData();
 
       final restaurant = res.data["restaurant"];
       final media = restaurant?["media"];
@@ -147,20 +154,30 @@ class _WelcomeScreenState extends State<WelcomeScreen>
       await ReceiptPrintMode.storeFromMap(
         restaurant is Map ? restaurant : null,
       );
+      await KioskRestaurantMeta.storeFromMaps(
+        restaurant: restaurant is Map ? restaurant : null,
+        kioskSettings: kioskSettings is Map ? kioskSettings : null,
+      );
 
       List<String> tempBanners = [];
       if (media is List) {
         tempBanners = media
             .whereType<Map>()
             .where((m) => m["path"] != null)
-            .map<String>((m) => m["path"].toString())
+            .map<String>((m) => normalizeImageUrl(m["path"].toString()))
+            .where(isSupportedRasterImageUrl)
             .toList();
       }
 
       if (tempBanners.isEmpty &&
           kioskSettings is Map &&
           kioskSettings["home_banner_url"] != null) {
-        tempBanners.add(kioskSettings["home_banner_url"].toString());
+        final bannerUrl = normalizeImageUrl(
+          kioskSettings["home_banner_url"].toString(),
+        );
+        if (isSupportedRasterImageUrl(bannerUrl)) {
+          tempBanners.add(bannerUrl);
+        }
       }
 
       if (!mounted) return;
@@ -171,7 +188,12 @@ class _WelcomeScreenState extends State<WelcomeScreen>
       );
 
       setState(() {
-        restaurantName = restaurant?["name"] ?? "Start Your Order";
+        restaurantName = savedDisplayName ??
+            KioskRestaurantMeta.resolveRestaurantName(
+              restaurant: restaurant is Map ? restaurant : null,
+              kioskSettings: kioskSettings is Map ? kioskSettings : null,
+              fallback: "Start Your Order",
+            );
         banners = tempBanners;
         currentIndex =
             tempBanners.isEmpty ? 0 : currentIndex % tempBanners.length;
@@ -270,6 +292,25 @@ class _WelcomeScreenState extends State<WelcomeScreen>
     setState(() {});
   }
 
+  Future<void> _handleRestaurantInfoUpdated() async {
+    final prefs = await SharedPreferences.getInstance();
+    final displayName = _storedDisplayName(prefs);
+    if (!mounted || displayName == null) return;
+    setState(() => restaurantName = displayName);
+  }
+
+  String? _storedDisplayName(SharedPreferences prefs) {
+    for (final key in const [
+      KioskRestaurantMeta.kioskDisplayNameKey,
+      "kiosk_name",
+      KioskRestaurantMeta.restaurantNameKey,
+    ]) {
+      final value = prefs.getString(key)?.trim();
+      if (value != null && value.isNotEmpty) return value;
+    }
+    return null;
+  }
+
   @override
   void dispose() {
     if (!kIsWeb) {
@@ -287,6 +328,9 @@ class _WelcomeScreenState extends State<WelcomeScreen>
       KioskMemoryService.instance.mediaRefreshTick.removeListener(
         _mediaRefreshListener!,
       );
+    }
+    if (_restaurantInfoListener != null) {
+      OrderUtils.infoRevision.removeListener(_restaurantInfoListener!);
     }
     _adminTapResetTimer?.cancel();
     _sliderTimer?.cancel();
@@ -324,6 +368,9 @@ class _WelcomeScreenState extends State<WelcomeScreen>
     final int bannerCacheWidth = (screenSize.width * dpr).round();
     final int bannerCacheHeight = (screenSize.height * dpr).round();
 
+    final bannerUrl =
+        banners.isEmpty ? "" : banners[currentIndex % banners.length];
+
     return Scaffold(
       body: Listener(
         behavior: HitTestBehavior.translucent,
@@ -343,7 +390,7 @@ class _WelcomeScreenState extends State<WelcomeScreen>
                       transitionBuilder: (child, animation) =>
                           FadeTransition(opacity: animation, child: child),
                       child: Image.network(
-                        banners[currentIndex % banners.length],
+                        bannerUrl,
                         key: ValueKey(
                           "banner-refresh-$_mediaRefreshKey-${currentIndex % banners.length}",
                         ),
@@ -351,6 +398,8 @@ class _WelcomeScreenState extends State<WelcomeScreen>
                         cacheWidth: bannerCacheWidth,
                         cacheHeight: bannerCacheHeight,
                         filterQuality: FilterQuality.low,
+                        errorBuilder: (_, __, ___) =>
+                            Container(color: Colors.black),
                       ),
                     ),
             ),

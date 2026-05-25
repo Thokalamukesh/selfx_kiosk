@@ -20,8 +20,7 @@ import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 
-final GlobalKey<NavigatorState> rootNavigatorKey =
-    GlobalKey<NavigatorState>();
+final GlobalKey<NavigatorState> rootNavigatorKey = GlobalKey<NavigatorState>();
 
 Future<void> main() async {
   await runZonedGuarded<Future<void>>(() async {
@@ -52,8 +51,8 @@ Future<void> main() async {
     final Widget initialHome = kIsWeb
         ? _resolveInitialWebHome()
         : (restaurantId == null || restaurantId.trim().isEmpty)
-        ? const UserIdScreen()
-        : (setupDone ? const WelcomeScreen() : const RegisterKioskScreen());
+            ? const UserIdScreen()
+            : (setupDone ? const WelcomeScreen() : const RegisterKioskScreen());
 
     runApp(
       ChangeNotifierProvider(
@@ -129,6 +128,7 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
   late final KioskWatchdog _watchdog;
   final FocusNode _appFocusNode = FocusNode(debugLabel: 'app-root');
   DateTime _lastActivityResetAt = DateTime.fromMillisecondsSinceEpoch(0);
+  bool _welcomeRecoveryInProgress = false;
 
   static const bool _enableHeartbeatLogs = false;
   static const Duration _idleTimeout = Duration(minutes: 3);
@@ -180,12 +180,41 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
 
   void _handleFreezeDetected(String reason) {
     _scheduleImageCacheClear();
-    final nav = rootNavigatorKey.currentState;
-    if (nav == null) return;
-    nav.pushAndRemoveUntil(
-      MaterialPageRoute(builder: (_) => const WelcomeScreen()),
-      (_) => false,
-    );
+  }
+
+  Future<bool> _isKioskSetupDone() async {
+    final prefs = await SharedPreferences.getInstance();
+    final restaurantId = prefs.getString("restaurant_id")?.trim() ?? "";
+    final setupDone = prefs.getBool("kiosk_setup_done") ?? false;
+    return restaurantId.isNotEmpty && setupDone;
+  }
+
+  Future<void> _returnToWelcomeWhenSetupDone({bool resetIdle = false}) async {
+    if (_welcomeRecoveryInProgress) {
+      if (resetIdle) _resetIdleTimer();
+      return;
+    }
+    _welcomeRecoveryInProgress = true;
+    try {
+      if (!await _isKioskSetupDone()) {
+        if (resetIdle) _resetIdleTimer();
+        return;
+      }
+
+      _scheduleImageCacheClear();
+      final nav = rootNavigatorKey.currentState;
+      if (nav == null) {
+        if (resetIdle) _resetIdleTimer();
+        return;
+      }
+      nav.pushAndRemoveUntil(
+        MaterialPageRoute(builder: (_) => const WelcomeScreen()),
+        (_) => false,
+      );
+      if (resetIdle) _resetIdleTimer();
+    } finally {
+      _welcomeRecoveryInProgress = false;
+    }
   }
 
   @override
@@ -290,8 +319,8 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
                     children: [
                       Container(
                         padding: const EdgeInsets.all(22),
-                        decoration: BoxDecoration(
-                          gradient: const LinearGradient(
+                        decoration: const BoxDecoration(
+                          gradient: LinearGradient(
                             colors: [Color(0xFFFFEBEE), Color(0xFFFFCDD2)],
                             begin: Alignment.topLeft,
                             end: Alignment.bottomRight,
@@ -379,8 +408,7 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
     bool allowUnfocus = true,
   }) {
     final now = DateTime.now();
-    if (!force &&
-        now.difference(_lastActivityResetAt) < _activityThrottle) {
+    if (!force && now.difference(_lastActivityResetAt) < _activityThrottle) {
       return;
     }
     _lastActivityResetAt = now;
@@ -402,14 +430,7 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
 
   void _handleIdleTimeout() {
     if (!IdleTimer.enabled.value) return;
-    final nav = rootNavigatorKey.currentState;
-    if (nav == null) return;
-    _scheduleImageCacheClear();
-    nav.pushAndRemoveUntil(
-      MaterialPageRoute(builder: (_) => const WelcomeScreen()),
-      (_) => false,
-    );
-    _resetIdleTimer();
+    unawaited(_returnToWelcomeWhenSetupDone(resetIdle: true));
   }
 
   void _startServiceHeartbeat() {

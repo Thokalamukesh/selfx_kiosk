@@ -1,6 +1,7 @@
 import 'package:api_selfxo_project/api/admin_api.dart';
 import 'package:api_selfxo_project/api/kiosk_api.dart';
 import 'package:api_selfxo_project/background_image/background_image.dart';
+import 'package:api_selfxo_project/core/kiosk_restaurant_meta.dart';
 import 'package:api_selfxo_project/core/receipt_print_mode.dart';
 import 'package:api_selfxo_project/screens/register_screen_web.dart';
 import 'package:flutter/material.dart';
@@ -63,6 +64,10 @@ class _RegisterKioskScreenState extends State<RegisterKioskScreen> {
 
       await ReceiptPrintMode.storeFromMap(settings);
       await ReceiptPrintMode.storeFromMap(restaurant);
+      await KioskRestaurantMeta.storeFromMaps(
+        restaurant: restaurant,
+        kioskSettings: settings,
+      );
 
       if (!_hasUsableKioskSettings(settings)) {
         await _redirectToRestaurantRegistration();
@@ -72,7 +77,10 @@ class _RegisterKioskScreenState extends State<RegisterKioskScreen> {
       if (!mounted) return;
       setState(() {
         _settingsData = settings;
-        restaurantName = restaurant["name"] ?? "Restaurant";
+        restaurantName = KioskRestaurantMeta.resolveRestaurantName(
+          restaurant: restaurant,
+          kioskSettings: settings,
+        );
         _kioskNameCtrl.text = (savedName != null && savedName.trim().isNotEmpty)
             ? savedName.trim()
             : "";
@@ -93,6 +101,10 @@ class _RegisterKioskScreenState extends State<RegisterKioskScreen> {
 
         await ReceiptPrintMode.storeFromMap(kioskSettings);
         await ReceiptPrintMode.storeFromMap(restaurant);
+        await KioskRestaurantMeta.storeFromMaps(
+          restaurant: restaurant,
+          kioskSettings: kioskSettings,
+        );
 
         if (!_hasUsableKioskSettings(kioskSettings)) {
           await _redirectToRestaurantRegistration();
@@ -102,7 +114,10 @@ class _RegisterKioskScreenState extends State<RegisterKioskScreen> {
         if (!mounted) return;
         setState(() {
           _settingsData = kioskSettings;
-          restaurantName = restaurant["name"] ?? "Restaurant";
+          restaurantName = KioskRestaurantMeta.resolveRestaurantName(
+            restaurant: restaurant,
+            kioskSettings: kioskSettings,
+          );
           _kioskNameCtrl.text =
               (savedName != null && savedName.trim().isNotEmpty)
                   ? savedName.trim()
@@ -129,6 +144,7 @@ class _RegisterKioskScreenState extends State<RegisterKioskScreen> {
       final body = <String, dynamic>{
         "name": name,
         "kiosk_name": name,
+        "kiosk_display_name": name,
         "device_name": name,
       };
       if (_settingsData != null) {
@@ -144,10 +160,14 @@ class _RegisterKioskScreenState extends State<RegisterKioskScreen> {
       await AdminApi().updateSettings(body);
       final prefs = await SharedPreferences.getInstance();
       await prefs.setString("kiosk_name", name);
+      await prefs.setString(KioskRestaurantMeta.kioskDisplayNameKey, name);
+      await prefs.setString(KioskRestaurantMeta.restaurantNameKey, name);
       _showSnackBar("Device name updated", Colors.green);
     } catch (_) {
       final prefs = await SharedPreferences.getInstance();
       await prefs.setString("kiosk_name", name);
+      await prefs.setString(KioskRestaurantMeta.kioskDisplayNameKey, name);
+      await prefs.setString(KioskRestaurantMeta.restaurantNameKey, name);
       _showSnackBar("Saved locally.", const Color(0xFF1B8E3E));
     } finally {
       if (mounted) setState(() => _savingKioskName = false);

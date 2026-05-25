@@ -96,7 +96,7 @@ class ProductModel {
     return ProductModel(
       id: json["id"] ?? json["item_id"] ?? 0,
       name: json["item_name"] ?? "",
-      category: json["category_name"] ?? "Others",
+      category: json["category_name"] ?? "",
       price: int.tryParse(json["price"].toString()) ?? 0,
       image: json["item_photo_url"] ?? "",
       type: normalizeType(rawType),

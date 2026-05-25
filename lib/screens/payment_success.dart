@@ -9,6 +9,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:api_selfxo_project/background_image/background_image.dart';
 import 'package:api_selfxo_project/core/kiosk_config.dart';
+import 'package:api_selfxo_project/core/kiosk_restaurant_meta.dart';
 import 'package:api_selfxo_project/core/kiosk_memory_service.dart';
 import 'package:api_selfxo_project/printer/printer_s.dart';
 import 'package:api_selfxo_project/api/kiosk_api.dart';
@@ -54,6 +55,7 @@ class _PaymentSuccessDialogState extends State<PaymentSuccessDialog>
   late AnimationController _pulseController;
   late Animation<double> _pulseAnimation;
   final bool _enableSuccessAnimations = KioskConfig.enableSuccessAnimations;
+  final Random _jitterRandom = Random();
 
   Timer? autoCloseTimer;
   Timer? _pulseStopTimer;
@@ -197,7 +199,11 @@ class _PaymentSuccessDialogState extends State<PaymentSuccessDialog>
       }
       restaurantName ??= "OUR KITCHEN";
       final prefs = await SharedPreferences.getInstance();
-      final taxId = prefs.getString("gst_number") ?? prefs.getString("tax_id");
+      final showTaxInReceipt =
+          prefs.getBool(KioskRestaurantMeta.showTaxInReceiptKey) ?? false;
+      final taxId = showTaxInReceipt
+          ? (prefs.getString("gst_number") ?? prefs.getString("tax_id"))
+          : null;
 
       String? transactionId = widget.transactionId;
       DateTime? orderDate = widget.orderDate;
@@ -219,7 +225,7 @@ class _PaymentSuccessDialogState extends State<PaymentSuccessDialog>
         transactionId: transactionId,
         orderDate: orderDate,
         orderType: widget.orderType,
-        removeTaxLines: true,
+        removeTaxLines: !showTaxInReceipt,
       );
 
       if (!mounted) return;
@@ -525,7 +531,8 @@ class _PaymentSuccessDialogState extends State<PaymentSuccessDialog>
           AnimatedBuilder(
             animation: _vibrateController,
             builder: (_, child) {
-              final offset = isPrinting ? (Random().nextDouble() * 2 - 1) : 0.0;
+              final offset =
+                  isPrinting ? (_jitterRandom.nextDouble() * 2 - 1) : 0.0;
               return Transform.translate(
                 offset: Offset(offset, 0),
                 child: child,
@@ -987,6 +994,13 @@ class _PaymentSuccessDialogState extends State<PaymentSuccessDialog>
     switch (status) {
       case "PRINT_STARTED":
       case "PRINTING":
+        if (isPrinting &&
+            _blockUi &&
+            printerStatus == PrinterStatus.printing &&
+            _printStatusText ==
+                (message.isNotEmpty ? message : "Printing your receipt...")) {
+          return;
+        }
         setState(() {
           isPrinting = true;
           _blockUi = true;
@@ -997,6 +1011,11 @@ class _PaymentSuccessDialogState extends State<PaymentSuccessDialog>
         });
         break;
       case "PRINT_SUCCESS":
+        if (!isPrinting &&
+            !_blockUi &&
+            printerStatus == PrinterStatus.success) {
+          return;
+        }
         setState(() {
           isPrinting = false;
           _blockUi = false;
@@ -1007,6 +1026,9 @@ class _PaymentSuccessDialogState extends State<PaymentSuccessDialog>
         _startAutoCloseTimer(seconds: 3);
         break;
       case "PRINT_ERROR":
+        if (!isPrinting && !_blockUi && printerStatus == PrinterStatus.error) {
+          return;
+        }
         setState(() {
           isPrinting = false;
           _blockUi = false;

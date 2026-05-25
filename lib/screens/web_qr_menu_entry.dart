@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:api_selfxo_project/api/kiosk_api.dart';
+import 'package:api_selfxo_project/core/kiosk_restaurant_meta.dart';
 import 'package:api_selfxo_project/core/receipt_print_mode.dart';
 import 'package:api_selfxo_project/screens/main_navigation.dart';
 import 'package:api_selfxo_project/screens/register_screen.dart';
@@ -150,6 +151,10 @@ class _WebQrMenuEntryScreenState extends State<WebQrMenuEntryScreen> {
     if (gst != null && gst.trim().isNotEmpty) {
       await prefs.setString("gst_number", gst);
     }
+    await KioskRestaurantMeta.storeFromMaps(
+      restaurant: restaurant,
+      kioskSettings: kioskSettings,
+    );
     await ReceiptPrintMode.storeFromMap(kioskSettings);
     await ReceiptPrintMode.storeFromMap(restaurant);
   }

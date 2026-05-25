@@ -6,6 +6,7 @@ import 'package:intl/intl.dart';
 import 'package:api_selfxo_project/background_image/background_image.dart';
 import 'package:api_selfxo_project/api/admin_api.dart';
 import 'package:api_selfxo_project/api/kiosk_api.dart';
+import 'package:api_selfxo_project/core/kiosk_restaurant_meta.dart';
 import 'package:api_selfxo_project/core/kiosk_log.dart';
 
 class OrdersHistoryTab extends StatefulWidget {
@@ -73,8 +74,7 @@ class _OrdersHistoryTabState extends State<OrdersHistoryTab>
       if (_loadingInFlight && _lastRequestKey == requestKey) {
         return;
       }
-      if (component != null && component.trim().isNotEmpty) {
-      }
+      if (component != null && component.trim().isNotEmpty) {}
 
       final requestId = ++_requestSeq;
       _activeRequestId = requestId;
@@ -318,14 +318,14 @@ class _OrdersHistoryTabState extends State<OrdersHistoryTab>
                               ),
                               gridDelegate:
                                   SliverGridDelegateWithFixedCrossAxisCount(
-                                    crossAxisCount: crossAxisCount,
-                                    crossAxisSpacing: 10,
-                                    mainAxisSpacing: 10,
-                                    childAspectRatio:
-                                        constraints.crossAxisExtent < 700
+                                crossAxisCount: crossAxisCount,
+                                crossAxisSpacing: 10,
+                                mainAxisSpacing: 10,
+                                childAspectRatio:
+                                    constraints.crossAxisExtent < 700
                                         ? 0.85
                                         : 1.2,
-                                  ),
+                              ),
                             );
                           },
                         ),
@@ -636,6 +636,8 @@ class _OrdersHistoryTabState extends State<OrdersHistoryTab>
         _extractRestaurantName(rawData) ?? fallbackRestaurant;
     final address = _extractRestaurantAddress(rawData);
     final taxId = _extractTaxId(rawData);
+    final showTaxInReceipt =
+        prefs.getBool(KioskRestaurantMeta.showTaxInReceiptKey) ?? false;
     final taxAmount = _extractTaxAmount(rawData);
     final discountAmount = _extractDiscountAmount(rawData);
     final orderTypeLabel = _getOrderType(rawData);
@@ -647,14 +649,14 @@ class _OrdersHistoryTabState extends State<OrdersHistoryTab>
         cartItems: finalItems,
         restaurantName: restaurantName,
         address: address,
-        taxId: taxId,
+        taxId: showTaxInReceipt ? taxId : null,
         transactionId: txnId,
         orderDate: orderDate,
         paymentMode: paymentMode,
         taxAmount: taxAmount,
         discountAmount: discountAmount,
         orderType: orderTypeLabel,
-        removeTaxLines: true,
+        removeTaxLines: !showTaxInReceipt,
         parcelTotalOverride: parcelTotal,
       );
       _showSnack("Print started", Colors.green);
@@ -671,8 +673,7 @@ class _OrdersHistoryTabState extends State<OrdersHistoryTab>
     bool found = false;
     for (final item in items) {
       final qty = item["qty"] is num ? item["qty"] as num : 1;
-      final charge =
-          item["take_away_charge"] ??
+      final charge = item["take_away_charge"] ??
           item["takeaway_charge"] ??
           item["parcel_charge"] ??
           item["parcelCharge"] ??
@@ -829,9 +830,8 @@ class _OrdersHistoryTabState extends State<OrdersHistoryTab>
                 }
               }
               final data = res?.data ?? {};
-              final normalized = data is Map
-                  ? Map<String, dynamic>.from(data)
-                  : {};
+              final normalized =
+                  data is Map ? Map<String, dynamic>.from(data) : {};
               items = _extractOrderItems(normalized);
               if (items.isEmpty) {
                 items = _extractOrderItems(o);
@@ -858,8 +858,7 @@ class _OrdersHistoryTabState extends State<OrdersHistoryTab>
             (sum, i) => sum + (i["amount"] as num? ?? 0),
           );
           final total = amount > 0 ? amount : subtotal;
-          final bool showDue =
-              _isPendingStatus(status) ||
+          final bool showDue = _isPendingStatus(status) ||
               status.contains("due") ||
               status.contains("unpaid");
 
@@ -1322,8 +1321,7 @@ class _OrdersHistoryTabState extends State<OrdersHistoryTab>
     if (data == null) return "N/A";
     dynamic raw;
     if (data is Map) {
-      raw =
-          data["order_type"] ??
+      raw = data["order_type"] ??
           data["orderType"] ??
           data["order_mode"] ??
           data["orderMode"] ??
@@ -1334,8 +1332,7 @@ class _OrdersHistoryTabState extends State<OrdersHistoryTab>
           data["serviceType"];
       if (raw == null && data["order"] is Map) {
         final order = data["order"] as Map;
-        raw =
-            order["order_type"] ??
+        raw = order["order_type"] ??
             order["orderType"] ??
             order["order_mode"] ??
             order["orderMode"] ??
@@ -1421,38 +1418,33 @@ class _OrdersHistoryTabState extends State<OrdersHistoryTab>
       final menuItem = item["menu_item"] is Map
           ? item["menu_item"] as Map
           : item["item"] is Map
-          ? item["item"] as Map
-          : null;
+              ? item["item"] as Map
+              : null;
       final pivot = item["pivot"] is Map ? item["pivot"] as Map : null;
-      final name =
-          item["item_name"] ??
+      final name = item["item_name"] ??
           item["name"] ??
           item["menu_item_name"] ??
           menuItem?["item_name"] ??
           menuItem?["name"] ??
           "Item";
-      final qty =
-          item["quantity"] ??
+      final qty = item["quantity"] ??
           item["qty"] ??
           item["count"] ??
           item["qty_ordered"] ??
           pivot?["quantity"] ??
           1;
-      final price =
-          item["price"] ??
+      final price = item["price"] ??
           item["unit_price"] ??
           item["item_price"] ??
           item["rate"] ??
           pivot?["price"] ??
           menuItem?["price"] ??
           0;
-      final amount =
-          item["amount"] ??
+      final amount = item["amount"] ??
           item["total"] ??
           item["total_price"] ??
           (qty is num ? qty * (price is num ? price : 0) : 0);
-      final category =
-          item["category_name"] ??
+      final category = item["category_name"] ??
           item["category"] ??
           item["item_category"] ??
           menuItem?["category_name"] ??
@@ -1634,8 +1626,7 @@ class _OrdersHistoryTabState extends State<OrdersHistoryTab>
   }
 
   DateTime? _parseOrderCreatedAt(dynamic o) {
-    final raw =
-        o["created_at"] ??
+    final raw = o["created_at"] ??
         o["order_date"] ??
         o["date"] ??
         o["createdAt"] ??
@@ -1739,8 +1730,7 @@ class _OrdersHistoryTabState extends State<OrdersHistoryTab>
   }
 
   String _getOrderLabel(dynamic o) {
-    final label =
-        o["order_number"] ??
+    final label = o["order_number"] ??
         o["order_no"] ??
         o["invoice_number"] ??
         o["id"] ??
@@ -1749,8 +1739,7 @@ class _OrdersHistoryTabState extends State<OrdersHistoryTab>
   }
 
   String _getPaymentMode(dynamic o) {
-    final mode =
-        o["payment_mode"] ??
+    final mode = o["payment_mode"] ??
         o["paymentMethod"] ??
         o["payment_method"] ??
         o["payment_status"] ??
@@ -1759,8 +1748,7 @@ class _OrdersHistoryTabState extends State<OrdersHistoryTab>
   }
 
   String _getStatus(dynamic o) {
-    final status =
-        o["status"] ??
+    final status = o["status"] ??
         o["order_status"] ??
         o["payment_status"] ??
         o["state"] ??
@@ -1769,8 +1757,7 @@ class _OrdersHistoryTabState extends State<OrdersHistoryTab>
   }
 
   double _getAmount(dynamic o) {
-    final v =
-        o["grand_total"] ??
+    final v = o["grand_total"] ??
         o["total"] ??
         o["amount"] ??
         o["total_amount"] ??
@@ -1780,8 +1767,7 @@ class _OrdersHistoryTabState extends State<OrdersHistoryTab>
   }
 
   String _formatOrderDate(dynamic o) {
-    final raw =
-        o["created_at"] ??
+    final raw = o["created_at"] ??
         o["order_date"] ??
         o["date"] ??
         o["createdAt"] ??

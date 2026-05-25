@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:api_selfxo_project/api/dio_client.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:intl/intl.dart';
+import 'package:api_selfxo_project/core/kiosk_restaurant_meta.dart';
 // Adding Sunmi Imports
 import 'package:sunmi_printer_plus/enums.dart';
 import 'package:sunmi_printer_plus/sunmi_printer_plus.dart';
@@ -180,6 +181,11 @@ class OrderUtils {
       final kiosk = res.data["kiosk_settings"];
       final branch = res.data["branch"];
       final savedKioskName = prefs.getString("kiosk_name");
+      final savedDisplayName = prefs.getString(
+        KioskRestaurantMeta.kioskDisplayNameKey,
+      );
+      await KioskRestaurantMeta.storeFromResponse(res.data);
+      final bundle = KioskRestaurantMeta.extractBundle(res.data);
       String? taxId;
       if (restaurant is Map) {
         taxId = restaurant["gst_number"] ??
@@ -191,9 +197,23 @@ class OrderUtils {
       }
 
       return {
-        "restaurant_name": res.data["restaurant"]?["name"],
+        "restaurant_name": KioskRestaurantMeta.resolveRestaurantName(
+          root: bundle.root,
+          data: bundle.data,
+          restaurant: bundle.restaurant,
+          kioskSettings: bundle.kioskSettings,
+          fallback: savedDisplayName ?? "Restaurant",
+        ),
         "address": res.data["restaurant"]?["address"],
         "tax_id": taxId,
+        "show_tax_in_receipt": KioskRestaurantMeta.resolveShowTaxInReceipt(
+              root: bundle.root,
+              data: bundle.data,
+              restaurant: bundle.restaurant,
+              kioskSettings: bundle.kioskSettings,
+            ) ??
+            prefs.getBool(KioskRestaurantMeta.showTaxInReceiptKey) ??
+            false,
         "timezone": restaurant?["timezone"] ?? "Asia/Kolkata",
         "restaurant_timezone": restaurant?["timezone"] ?? "Asia/Kolkata",
         "printer_id": kiosk?["printer_id"],
