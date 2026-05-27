@@ -192,17 +192,15 @@ class _PaymentSuccessDialogState extends State<PaymentSuccessDialog>
     }
 
     try {
-      String? restaurantName = widget.restaurantName;
-      if (restaurantName == null || restaurantName.trim().isEmpty) {
-        final prefs = await SharedPreferences.getInstance();
-        restaurantName = prefs.getString("restaurant_name");
-      }
-      restaurantName ??= "OUR KITCHEN";
       final prefs = await SharedPreferences.getInstance();
+      final restaurantName = _storedReceiptRestaurantName(prefs) ??
+          widget.restaurantName ??
+          "OUR KITCHEN";
       final showTaxInReceipt =
-          prefs.getBool(KioskRestaurantMeta.showTaxInReceiptKey) ?? false;
+          await KioskRestaurantMeta.getStoredShowTaxInReceipt();
       final taxId = showTaxInReceipt
-          ? (prefs.getString("gst_number") ?? prefs.getString("tax_id"))
+          ? (prefs.getString(KioskRestaurantMeta.gstNumberKey) ??
+              prefs.getString(KioskRestaurantMeta.taxIdKey))
           : null;
 
       String? transactionId = widget.transactionId;
@@ -434,17 +432,25 @@ class _PaymentSuccessDialogState extends State<PaymentSuccessDialog>
   }
 
   Future<void> _loadRestaurantName() async {
-    String? name = widget.restaurantName;
-    if (name == null || name.trim().isEmpty) {
-      final prefs = await SharedPreferences.getInstance();
-      name = prefs.getString("restaurant_name");
-    }
+    final prefs = await SharedPreferences.getInstance();
+    final name = _storedReceiptRestaurantName(prefs) ?? widget.restaurantName;
     if (!mounted) return;
     setState(() {
-      _restaurantName = (name == null || name.trim().isEmpty)
-          ? _restaurantName
-          : name!.trim();
+      _restaurantName =
+          (name == null || name.trim().isEmpty) ? _restaurantName : name.trim();
     });
+  }
+
+  String? _storedReceiptRestaurantName(SharedPreferences prefs) {
+    for (final key in const [
+      KioskRestaurantMeta.kioskDisplayNameKey,
+      "kiosk_name",
+      KioskRestaurantMeta.restaurantNameKey,
+    ]) {
+      final value = prefs.getString(key)?.trim();
+      if (value != null && value.isNotEmpty) return value;
+    }
+    return null;
   }
 
   // ================= UI COMPONENTS =================

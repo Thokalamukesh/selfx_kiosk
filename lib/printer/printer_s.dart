@@ -223,6 +223,9 @@ class PrinterService {
     num? parcelTotalOverride,
   }) async {
     final type = await _getPrinterType();
+    if (type == null) {
+      throw Exception("Printer not configured");
+    }
     final receiptMode = await ReceiptPrintMode.getStoredMode();
     final bool shouldForceLocal = forceLocal;
     final num parcelTotal =
@@ -235,6 +238,9 @@ class PrinterService {
           final res = await KioskApi().printReceipt(orderId);
           final data = res.data;
           var printObjects = _extractBackendPrintObjects(data);
+          printObjects = printObjects
+              .map((p) => _withReceiptHeaderName(p, restaurantName))
+              .toList();
           if (requireBothCopies) {
             if (printObjects.length == 1) {
               final clone = counterCopyLabel
@@ -296,7 +302,9 @@ class PrinterService {
     // ================= USB PRINTER =================
     if (type == PrinterType.usb) {
       final printer = await _resolveUsbPrinter(allowAutoSelect: true);
-      if (printer == null) return;
+      if (printer == null) {
+        throw Exception("No USB printer selected");
+      }
 
       // ---- Prefer backend (Angular behavior) ----
       if (!shouldForceLocal && orderId > 0) {
@@ -305,6 +313,9 @@ class PrinterService {
           final data = res.data;
 
           var printObjects = _extractBackendPrintObjects(data);
+          printObjects = printObjects
+              .map((p) => _withReceiptHeaderName(p, restaurantName))
+              .toList();
           if (requireBothCopies) {
             if (printObjects.length == 1) {
               final clone = counterCopyLabel
@@ -372,8 +383,9 @@ class PrinterService {
       // Angular behavior: backend handles printing
       if (orderId > 0) {
         await KioskApi().printReceipt(orderId);
+        return;
       }
-      return;
+      throw Exception("Order ID missing for LAN print");
     }
   }
 
@@ -1585,6 +1597,50 @@ class PrinterService {
       }
       return true;
     }).toList();
+  }
+
+  List<dynamic> _withReceiptHeaderName(
+    List<dynamic> printObject,
+    String? restaurantName,
+  ) {
+    final name = restaurantName?.trim();
+    if (name == null || name.isEmpty) return printObject;
+
+    final out = _clonePrintObject(printObject);
+    for (var i = 0; i < out.length; i++) {
+      final entry = out[i];
+      if (entry is! Map || entry['type'] != 'text') continue;
+
+      final text = entry['text']?.toString().trim() ?? '';
+      if (text.isEmpty) continue;
+
+      final lower = text.toLowerCase();
+      if (lower.contains('counter copy') ||
+          lower == 'counter' ||
+          lower == 'parcel') {
+        continue;
+      }
+
+      final updated = Map<dynamic, dynamic>.from(entry);
+      updated['text'] = name;
+      out[i] = updated;
+      return out;
+    }
+
+    return [
+      {
+        'type': 'text',
+        'text': name,
+        'options': {
+          'align': 1,
+          'bold': true,
+          'widthTimes': 1,
+          'heightTimes': 1
+        },
+      },
+      {'type': 'feedLine'},
+      ...out,
+    ];
   }
 
   List<List<dynamic>> _extractBackendPrintObjects(dynamic data) {

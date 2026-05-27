@@ -13,6 +13,8 @@ import '../api/kiosk_api.dart';
 import '../core/image_url.dart';
 import '../core/device_info.dart';
 import '../core/idle_timer.dart';
+import '../core/kiosk_log.dart';
+import '../core/kiosk_restaurant_meta.dart';
 import 'package:api_selfxo_project/core/kiosk_memory_service.dart';
 import 'package:api_selfxo_project/widget/app_network_image.dart';
 
@@ -259,11 +261,20 @@ class _PaymentScreenState extends State<PaymentScreen>
   Future<void> preloadRestaurantData() async {
     try {
       final res = await KioskApi().getRestaurantData();
-      final restaurant = res.data["data"]?["restaurant"];
-      final name = restaurant?["name"] ?? "OUR KITCHEN";
-
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setString("restaurant_name", name);
+      final bundle = KioskRestaurantMeta.extractBundle(res.data);
+      final name = KioskRestaurantMeta.resolveRestaurantName(
+        root: bundle.root,
+        data: bundle.data,
+        restaurant: bundle.restaurant,
+        kioskSettings: bundle.kioskSettings,
+        fallback: "OUR KITCHEN",
+      );
+      await KioskRestaurantMeta.storeFromMaps(
+        root: bundle.root,
+        data: bundle.data,
+        restaurant: bundle.restaurant,
+        kioskSettings: bundle.kioskSettings,
+      );
 
       if (mounted) {
         setState(() {
@@ -300,11 +311,6 @@ class _PaymentScreenState extends State<PaymentScreen>
       final qrRes = await KioskApi().generateQr(orderId: orderId!);
 
       qrData = _extractQrString(qrRes.data);
-      if (qrData != null) {
-        final uri = Uri.tryParse(qrData!);
-        final pn = uri?.queryParameters["pn"];
-        if (pn != null && mounted) displayRestaurantName = pn.toUpperCase();
-      }
 
       final amountPaise = _extractAmountPaise(qrRes.data);
       payableAmount = amountPaise != null
@@ -431,16 +437,83 @@ class _PaymentScreenState extends State<PaymentScreen>
         final res = await KioskApi().checkPayment(orderId!);
         if (!_active || !mounted) return;
 
-        if (res.data["status"] == "paid") {
+        final status = _extractPaymentStatus(res.data);
+        kioskLog(
+          "Payment poll order=$orderId status=${status ?? 'unknown'} body=${res.data}",
+          tag: "PAYMENT",
+        );
+
+        if (_isPaidStatus(status)) {
           paymentTimer?.cancel();
 
           await _handlePaymentSuccess();
         }
-      } catch (_) {
+      } catch (e, stackTrace) {
+        kioskLogError(
+          "Payment poll failed for order=$orderId",
+          tag: "PAYMENT",
+          error: e,
+          stackTrace: stackTrace,
+        );
       } finally {
         _pollingPayment = false;
       }
     });
+  }
+
+  String? _extractPaymentStatus(dynamic payload) {
+    String? normalize(dynamic value) {
+      final text = value?.toString().trim();
+      if (text == null || text.isEmpty) return null;
+      return text.toLowerCase().replaceAll("-", "_").replaceAll(" ", "_");
+    }
+
+    String? findIn(dynamic data, int depth) {
+      if (data == null || depth <= 0) return null;
+      if (data is Map) {
+        for (final key in const [
+          "status",
+          "payment_status",
+          "paymentStatus",
+          "order_status",
+          "orderStatus",
+          "transaction_status",
+          "transactionStatus",
+        ]) {
+          if (data.containsKey(key)) {
+            final status = normalize(data[key]);
+            if (status != null) return status;
+          }
+        }
+        for (final key in const [
+          "data",
+          "order",
+          "payment",
+          "transaction",
+          "result",
+          "response",
+          "payload",
+        ]) {
+          if (data.containsKey(key)) {
+            final nested = findIn(data[key], depth - 1);
+            if (nested != null) return nested;
+          }
+        }
+      }
+      return null;
+    }
+
+    return findIn(payload, 5);
+  }
+
+  bool _isPaidStatus(String? status) {
+    if (status == null) return false;
+    return status == "paid" ||
+        status == "success" ||
+        status == "successful" ||
+        status == "completed" ||
+        status == "payment_success" ||
+        status == "captured";
   }
 
   bool _receiptPrinted = false;
@@ -452,15 +525,6 @@ class _PaymentScreenState extends State<PaymentScreen>
     timeoutTimer?.cancel();
     _paymentFailTimer?.cancel();
 
-    // Fire-and-forget backend print trigger. Awaiting this before navigation can
-    // leave the payment screen frozen while receipt generation/network work runs.
-    unawaited(() async {
-      try {
-        await KioskApi().printReceipt(orderId!);
-      } catch (_) {}
-    }());
-
-    // 🎉 Always continue
     if (!_active || !mounted) return;
     _showSuccess();
   }

@@ -8,7 +8,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:api_selfxo_project/core/connectivity_service.dart';
 
 class DioClient {
-  static const String baseUrl = "https://selfpos.sirixo.com/api/";
+  static const String baseUrl = "https://selfposdev.sirixo.com/api/";
   static const int _maxRetries = 3;
   static const Duration _retryBaseDelay = Duration(milliseconds: 500);
 

@@ -4,6 +4,8 @@ class KioskRestaurantMeta {
   static const String kioskDisplayNameKey = "kiosk_display_name";
   static const String restaurantNameKey = "restaurant_name";
   static const String showTaxInReceiptKey = "show_tax_in_receipt";
+  static const String gstNumberKey = "gst_number";
+  static const String taxIdKey = "tax_id";
 
   static ({
     Map<String, dynamic>? root,
@@ -63,6 +65,17 @@ class KioskRestaurantMeta {
     if (showTax != null) {
       await prefs.setBool(showTaxInReceiptKey, showTax);
     }
+
+    final taxId = resolveTaxId(
+      root: root,
+      data: data,
+      restaurant: restaurant,
+      kioskSettings: kioskSettings,
+    );
+    if (taxId != null) {
+      await prefs.setString(gstNumberKey, taxId);
+      await prefs.setString(taxIdKey, taxId);
+    }
   }
 
   static String? resolveDisplayName({
@@ -73,14 +86,14 @@ class KioskRestaurantMeta {
     String? fallback,
   }) {
     return _firstNonEmpty([
-      restaurant?["kiosk_display_name"],
       kioskSettings?["kiosk_display_name"],
       data?["kiosk_display_name"],
       root?["kiosk_display_name"],
-      restaurant?["kioskDisplayName"],
+      restaurant?["kiosk_display_name"],
       kioskSettings?["kioskDisplayName"],
-      restaurant?["display_name"],
+      restaurant?["kioskDisplayName"],
       kioskSettings?["display_name"],
+      restaurant?["display_name"],
       fallback,
     ]);
   }
@@ -114,12 +127,36 @@ class KioskRestaurantMeta {
     Map? restaurant,
     Map? kioskSettings,
   }) {
-    for (final source in [restaurant, kioskSettings, data, root]) {
+    for (final source in [kioskSettings, restaurant, data, root]) {
       final value = _readBool(source, const [
         "show_tax_in_receipt",
         "showTaxInReceipt",
+        "show_gst_in_receipt",
+        "showGstInReceipt",
         "show_tax",
         "showTax",
+        "show_gst",
+        "showGst",
+      ]);
+      if (value != null) return value;
+    }
+    return null;
+  }
+
+  static String? resolveTaxId({
+    Map? root,
+    Map? data,
+    Map? restaurant,
+    Map? kioskSettings,
+  }) {
+    for (final source in [kioskSettings, restaurant, data, root]) {
+      final value = _firstNonEmpty([
+        source?["gst_number"],
+        source?["gstin"],
+        source?["tax_id"],
+        source?["taxId"],
+        source?["gst_no"],
+        source?["gst"],
       ]);
       if (value != null) return value;
     }
