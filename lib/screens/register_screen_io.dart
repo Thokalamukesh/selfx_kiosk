@@ -6,6 +6,7 @@ import 'package:api_selfxo_project/background_image/background_image.dart';
 import 'package:api_selfxo_project/printer/register_kiosk.dart';
 import 'package:api_selfxo_project/core/connectivity_service.dart';
 import 'package:flutter/cupertino.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:dio/dio.dart';
@@ -122,6 +123,8 @@ class _UserIdScreenState extends State<UserIdScreen> {
   }
 
   Future<void> _handleUSBPrinterSelection() async {
+    if (kIsWeb) return;
+
     try {
       final List<Map<String, dynamic>> printers =
           await _usbPrinterService.getPrinterList();

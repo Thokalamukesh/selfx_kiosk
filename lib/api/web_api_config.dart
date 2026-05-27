@@ -1,5 +1,5 @@
 class WebApiConfig {
-  static const String defaultBaseUrl = "";
+  static const String defaultBaseUrl = "https://selfposdev.sirixo.com/api/";
   static const String defaultRestaurantsUrl = "";
 
   static const String baseUrl = String.fromEnvironment(

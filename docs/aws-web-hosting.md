@@ -7,7 +7,7 @@ The current app shape is:
 
 - Frontend: static Flutter web files
 - Backend API: external HTTP API
-- Default web API base URL: none
+- Default web API base URL: `https://selfposdev.sirixo.com/api/`
 
 Set the web API URL at build time when the hosted frontend should call a
 backend API.
@@ -121,7 +121,7 @@ The web API URL is now configurable at build time.
 
 Defaults:
 
-- `SELFX_WEB_API_BASE_URL=` unset
+- `SELFX_WEB_API_BASE_URL=https://selfposdev.sirixo.com/api/`
 - `SELFX_WEB_RESTAURANTS_URL=` unset
 
 If your API is available behind an AWS domain, deploy like this:

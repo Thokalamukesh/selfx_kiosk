@@ -111,9 +111,6 @@ class KioskApi {
   // PRODUCTS
   // =========================================================
   Future<Response> getProducts() async {
-    final prefs = await SharedPreferences.getInstance();
-    final token = prefs.getString("auth_token"); // or access_token
-
     final dio = await DioClient.getAuthedDio();
     final res = await dio.get("kiosks/getProducts");
     return res;
