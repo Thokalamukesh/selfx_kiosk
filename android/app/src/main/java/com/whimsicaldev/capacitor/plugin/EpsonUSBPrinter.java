@@ -129,7 +129,7 @@ public class EpsonUSBPrinter {
     }
 
     private UsbDevice findDevice(Integer deviceId, Integer vendorId, Integer productId) {
-        HashMap<String, UsbDevice> deviceList = this.manager.getDeviceList();
+        HashMap<String, UsbDevice> deviceList = this.manager.getDeviceL ist();
         if (deviceId != null) {
             for (UsbDevice device : deviceList.values()) {
                 if (deviceId == device.getDeviceId()) {

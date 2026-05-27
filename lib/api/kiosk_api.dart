@@ -32,7 +32,15 @@ class KioskApi {
       ),
     );
 
-    final configuredUrl = WebApiConfig.allRestaurantsUrl;
+    final configuredUrl = WebApiConfig.allRestaurantsUrl.trim();
+    if (configuredUrl.isEmpty) {
+      kioskLog(
+        'No web restaurants URL configured',
+        tag: 'WEB_RESTAURANTS',
+      );
+      return const [];
+    }
+
     kioskLog(
       'Loading web restaurants from $configuredUrl',
       tag: 'WEB_RESTAURANTS',

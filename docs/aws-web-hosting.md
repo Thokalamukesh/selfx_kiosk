@@ -7,9 +7,10 @@ The current app shape is:
 
 - Frontend: static Flutter web files
 - Backend API: external HTTP API
-- Default web API base URL: `https://gitam.sirixo.com/api/`
+- Default web API base URL: none
 
-That means you can host the frontend on AWS without moving the API yet.
+Set the web API URL at build time when the hosted frontend should call a
+backend API.
 
 ## Recommended AWS setup
 
@@ -120,12 +121,10 @@ The web API URL is now configurable at build time.
 
 Defaults:
 
-- `SELFX_WEB_API_BASE_URL=https://gitam.sirixo.com/api/`
-- `SELFX_WEB_RESTAURANTS_URL=https://gitam.sirixo.com/api/all-restaurants`
+- `SELFX_WEB_API_BASE_URL=` unset
+- `SELFX_WEB_RESTAURANTS_URL=` unset
 
-If you keep using the current backend, you do not need to set anything.
-
-If you later move the API behind an AWS domain, deploy like this:
+If your API is available behind an AWS domain, deploy like this:
 
 ```bash
 export AWS_S3_BUCKET=your-site-bucket
@@ -137,9 +136,9 @@ export SELFX_WEB_RESTAURANTS_URL=https://api.yourdomain.com/api/all-restaurants
 
 ## Important CORS note
 
-If the frontend is hosted on a new AWS domain but the API stays on
-`gitam.sirixo.com`, the API must allow the new frontend origin. Otherwise the
-browser will block requests even if the app loads successfully.
+If the frontend is hosted on a new AWS domain, the API must allow the new
+frontend origin. Otherwise the browser will block requests even if the app
+loads successfully.
 
 Typical allowed origins would be your CloudFront domain or your custom domain,
 for example:
