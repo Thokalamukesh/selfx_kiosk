@@ -2330,8 +2330,8 @@ class PrinterService {
   }
 
   String _backendMoney(num value, String currency) {
-    final prefix = currency.trim().isEmpty ? 'Rs' : currency.trim();
-    return '$prefix${value.toStringAsFixed(2)}';
+    final prefix = _printerSafeCurrency(currency);
+    return '$prefix ${value.toStringAsFixed(2)}';
   }
 
   String _formatQty(num value) {
@@ -2933,7 +2933,7 @@ class PrinterService {
   }) {
     final width = lineWidth.clamp(24, 80);
     final l = left.trim();
-    final r = right.trim();
+    final r = _formatBackendRowRight(left, right);
     if (r.isEmpty) return l;
     if (l.isEmpty) return r.padLeft(width);
     final rightWidth = r.length.clamp(6, 12).toInt();
@@ -2950,6 +2950,40 @@ class PrinterService {
       }
     }
     return lines.join('\n');
+  }
+
+  String _formatBackendRowRight(String left, String right) {
+    final value = _printerSafeText(right).trim();
+    if (value.isEmpty) return value;
+    final lowerLeft = left.trim().toLowerCase();
+    final looksLikeAmountLabel = lowerLeft.startsWith(RegExp(r'\d+\s*x\b')) ||
+        lowerLeft.contains('subtotal') ||
+        lowerLeft.contains('total') ||
+        lowerLeft.contains('tax') ||
+        lowerLeft.contains('discount') ||
+        lowerLeft.contains('charge') ||
+        lowerLeft.contains('amount') ||
+        lowerLeft.contains('price') ||
+        lowerLeft.contains('payment') ||
+        lowerLeft.contains('parcel') ||
+        lowerLeft.contains('service');
+    if (!looksLikeAmountLabel) return value;
+    if (RegExp(r'^(?:-)?(?:rs|inr)\s*\d', caseSensitive: false)
+        .hasMatch(value)) {
+      return value.replaceFirstMapped(
+        RegExp(r'^(?:-)?(?:rs|inr)\s*', caseSensitive: false),
+        (match) {
+          final raw = match.group(0) ?? '';
+          final negative = raw.trimLeft().startsWith('-');
+          return negative ? '-Rs ' : 'Rs ';
+        },
+      );
+    }
+    if (!RegExp(r'^-?\d+(?:\.\d{1,2})?$').hasMatch(value)) return value;
+    if (value.startsWith('-')) {
+      return '-Rs ${value.substring(1)}';
+    }
+    return 'Rs $value';
   }
 
   dynamic _sanitizeNullTokens(dynamic value) {
@@ -3299,7 +3333,17 @@ class PrinterService {
     return value
         .replaceAll('₹', 'Rs ')
         .replaceAll('₨', 'Rs ')
+        .replaceAll(RegExp(r'\bINR(?=\d)', caseSensitive: false), 'Rs ')
+        .replaceAll(RegExp(r'\bRs(?=\d)', caseSensitive: false), 'Rs ')
+        .replaceAll(RegExp(r'\bINR\s+', caseSensitive: false), 'Rs ')
         .replaceAll(RegExp(r'Rs\s+'), 'Rs ');
+  }
+
+  String _printerSafeCurrency(String value) {
+    final safe = _printerSafeText(value).trim();
+    if (safe.isEmpty) return 'Rs';
+    if (safe.toLowerCase() == 'inr') return 'Rs';
+    return safe;
   }
 
   SunmiPrintAlign _toSunmiAlign(int align) {

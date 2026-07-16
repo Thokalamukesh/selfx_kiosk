@@ -188,6 +188,9 @@ class EpsonUSBPrinterService {
     return value
         .replaceAll('₹', 'Rs ')
         .replaceAll('₨', 'Rs ')
+        .replaceAll(RegExp(r'\bINR(?=\d)', caseSensitive: false), 'Rs ')
+        .replaceAll(RegExp(r'\bRs(?=\d)', caseSensitive: false), 'Rs ')
+        .replaceAll(RegExp(r'\bINR\s+', caseSensitive: false), 'Rs ')
         .replaceAll(RegExp(r'Rs\s+'), 'Rs ');
   }
 
