@@ -3,6 +3,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/rendering.dart';
 import 'package:api_selfxo_project/core/image_url.dart';
 import 'package:api_selfxo_project/widget/app_network_image.dart';
+import 'package:api_selfxo_project/widget/product_description_dialog.dart';
 
 class ProductCardRef extends StatefulWidget {
   final int id;
@@ -10,6 +11,7 @@ class ProductCardRef extends StatefulWidget {
   final String category;
   final int price;
   final String imagePath;
+  final String description;
   final bool isVeg;
   final List<Map<String, dynamic>> variations;
   final List<Map<String, dynamic>> modifiers;
@@ -37,6 +39,7 @@ class ProductCardRef extends StatefulWidget {
     required this.category,
     required this.price,
     required this.imagePath,
+    this.description = "",
     required this.isVeg,
     required this.qty,
     required this.onAddToCart,
@@ -72,20 +75,7 @@ class _ProductCardRefState extends State<ProductCardRef> {
   bool get _needsCustomization =>
       widget.variations.isNotEmpty || widget.modifiers.isNotEmpty;
 
-  int _calculateFinalPrice(Map<String, dynamic> result) {
-    int total = widget.price;
-    final variation = result["variation"];
-    if (variation != null && variation is Map) {
-      total += (variation["price"] ?? 0) as int;
-    }
-    final modifiers = result["modifiers"];
-    if (modifiers != null && modifiers is List) {
-      for (final m in modifiers) {
-        if (m is Map) total += (m["price"] ?? 0) as int;
-      }
-    }
-    return total;
-  }
+  String get _description => cleanProductDescription(widget.description);
 
   void _addDirect() {
     final newQty = qty + 1;
@@ -135,6 +125,17 @@ class _ProductCardRefState extends State<ProductCardRef> {
     if (render is! RenderBox || !render.attached) return null;
     final topLeft = render.localToGlobal(Offset.zero);
     return topLeft & render.size;
+  }
+
+  void _showDescription() {
+    if (_description.isEmpty) return;
+    showProductDescriptionDialog(
+      context: context,
+      name: widget.name,
+      description: _description,
+      imagePath: widget.imagePath,
+      isVeg: widget.isVeg,
+    );
   }
 
   @override
@@ -194,19 +195,25 @@ class _ProductCardRefState extends State<ProductCardRef> {
               child: Container(
                 key: ValueKey("product-image-${widget.id}"),
                 color: Colors.grey.shade100,
-                child: imageUrl.isNotEmpty
-                    ? AppNetworkImage(
-                        url: imageUrl,
-                        fit: BoxFit.cover,
-                        alignment: Alignment.center,
-                        gaplessPlayback: true,
-                        cacheWidth: cacheWidth,
-                        cacheHeight: cacheHeight,
-                        fallback: const Center(
-                          child: Icon(Icons.fastfood, size: 30),
-                        ),
-                      )
-                    : const Center(child: Icon(Icons.fastfood, size: 30)),
+                child: Material(
+                  color: Colors.transparent,
+                  child: InkWell(
+                    onTap: _description.isEmpty ? null : _showDescription,
+                    child: imageUrl.isNotEmpty
+                        ? AppNetworkImage(
+                            url: imageUrl,
+                            fit: BoxFit.cover,
+                            alignment: Alignment.center,
+                            gaplessPlayback: true,
+                            cacheWidth: cacheWidth,
+                            cacheHeight: cacheHeight,
+                            fallback: const Center(
+                              child: Icon(Icons.fastfood, size: 30),
+                            ),
+                          )
+                        : const Center(child: Icon(Icons.fastfood, size: 30)),
+                  ),
+                ),
               ),
             ),
             Positioned(
@@ -272,15 +279,51 @@ class _ProductCardRefState extends State<ProductCardRef> {
             ),
           ),
           if (_needsCustomization)
-            Text(
-              "Variants Available",
-              textAlign: TextAlign.center,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: TextStyle(
-                fontSize: isCompactWebCard ? 8.5 : 10,
-                color: Colors.orange,
-                height: 1.0,
+            Padding(
+              padding: EdgeInsets.only(top: isCompactWebCard ? 2 : 4),
+              child: Container(
+                constraints: const BoxConstraints(maxWidth: 132),
+                padding: EdgeInsets.symmetric(
+                  horizontal: isCompactWebCard ? 6 : 8,
+                  vertical: isCompactWebCard ? 2 : 3,
+                ),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFFFF5E3),
+                  borderRadius: BorderRadius.circular(999),
+                  border: Border.all(color: const Color(0xFFE9BE72)),
+                  boxShadow: [
+                    BoxShadow(
+                      color: const Color(0xFF9F342C).withOpacity(0.08),
+                      blurRadius: 8,
+                      offset: const Offset(0, 3),
+                    ),
+                  ],
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(
+                      Icons.tune_rounded,
+                      size: isCompactWebCard ? 9 : 11,
+                      color: const Color(0xFF9F342C),
+                    ),
+                    SizedBox(width: isCompactWebCard ? 3 : 4),
+                    Flexible(
+                      child: Text(
+                        "Variants",
+                        textAlign: TextAlign.center,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontSize: isCompactWebCard ? 8.5 : 10,
+                          color: const Color(0xFF7A2B22),
+                          fontWeight: FontWeight.w800,
+                          height: 1.0,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
               ),
             )
           else
@@ -440,7 +483,6 @@ class _ProductCardRefState extends State<ProductCardRef> {
     if (result != null) {
       final int addedQty = (result["qty"] as num?)?.toInt() ?? 1;
       final int newTotalQty = qty + addedQty;
-      final int finalPrice = _calculateFinalPrice(result);
       final variation = result["variation"] as Map<String, dynamic>?;
       final modifiers = List<Map<String, dynamic>>.from(
         result["modifiers"] ?? [],
@@ -456,7 +498,7 @@ class _ProductCardRefState extends State<ProductCardRef> {
         widget.id,
         widget.name,
         widget.category,
-        finalPrice,
+        widget.price,
         widget.imagePath,
         newTotalQty,
         variation,
@@ -493,9 +535,6 @@ class _CustomizationSheetState extends State<_CustomizationSheet> {
   final Set<int> selectedModifiers = {};
   int quantity = 1;
 
-  static const Color kPrimary = Color(0xFF1B8E3E);
-  static const Color kAccent = Color(0xFFFFA726);
-
   String _safeText(dynamic value) {
     if (value == null) return "";
     if (value is String) return value;
@@ -505,22 +544,43 @@ class _CustomizationSheetState extends State<_CustomizationSheet> {
 
   bool get canAdd => widget.variations.isEmpty || selectedVariation != null;
 
+  int? _optionId(Map<String, dynamic> value) {
+    return int.tryParse(value["id"]?.toString() ?? "");
+  }
+
   @override
   Widget build(BuildContext context) {
     final isTablet = MediaQuery.of(context).size.width > 600;
+    final hasVariants = widget.variations.isNotEmpty;
+    final hasModifiers = widget.modifiers.isNotEmpty;
+    final hasBoth = hasVariants && hasModifiers;
+    final sheetHeightFactor = hasBoth ? (isTablet ? 0.68 : 0.74) : 0.52;
 
     return Align(
       alignment: Alignment.bottomCenter,
       child: ConstrainedBox(
         constraints: BoxConstraints(
           maxWidth: double.infinity,
-          minHeight: MediaQuery.of(context).size.height * 0.5,
-          maxHeight: MediaQuery.of(context).size.height * 0.5,
+          minHeight: MediaQuery.of(context).size.height * sheetHeightFactor,
+          maxHeight: MediaQuery.of(context).size.height * sheetHeightFactor,
         ),
         child: Container(
-          decoration: const BoxDecoration(
-            color: Color(0xFFF9FAFB),
-            borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+          decoration: BoxDecoration(
+            color: const Color(0xFFFFFCF7),
+            borderRadius: const BorderRadius.vertical(top: Radius.circular(28)),
+            border: Border(
+              top: BorderSide(
+                color: const Color(0xFFE2B85E).withOpacity(0.65),
+                width: 1.2,
+              ),
+            ),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withOpacity(0.18),
+                blurRadius: 30,
+                offset: const Offset(0, -10),
+              ),
+            ],
           ),
           padding: EdgeInsets.fromLTRB(
             0,
@@ -537,7 +597,7 @@ class _CustomizationSheetState extends State<_CustomizationSheet> {
                     width: 46,
                     height: 4,
                     decoration: BoxDecoration(
-                      color: Colors.grey.shade300,
+                      color: const Color(0xFFD6AE63),
                       borderRadius: BorderRadius.circular(4),
                     ),
                   ),
@@ -553,59 +613,57 @@ class _CustomizationSheetState extends State<_CustomizationSheet> {
                           padding: const EdgeInsets.all(12),
                           decoration: BoxDecoration(
                             color: Colors.white,
-                            borderRadius: BorderRadius.circular(16),
+                            borderRadius: BorderRadius.circular(18),
+                            border: Border.all(
+                              color: const Color(0xFFF0E2CA),
+                            ),
                             boxShadow: [
                               BoxShadow(
-                                color: Colors.black.withOpacity(0.06),
-                                blurRadius: 10,
-                                offset: const Offset(0, 4),
+                                color: const Color(0xFF7A2B22)
+                                    .withOpacity(0.08),
+                                blurRadius: 18,
+                                offset: const Offset(0, 7),
                               ),
                             ],
                           ),
                           child: _buildHeader(),
                         ),
                         const SizedBox(height: 12),
+                        if (hasBoth) ...[
+                          _customizationNotice(),
+                          const SizedBox(height: 12),
+                        ],
                         Expanded(
                           child: SingleChildScrollView(
                             child: Column(
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
-                                if (widget.variations.isNotEmpty) ...[
+                                if (hasVariants) ...[
                                   _sectionTitle(
                                     "Choose Size",
                                     Icons.straighten_rounded,
                                   ),
                                   const SizedBox(height: 8),
-                                  Wrap(
-                                    spacing: 10,
-                                    runSpacing: 10,
+                                  _animatedOptionRow(
+                                    index: 0,
                                     children: widget.variations
-                                        .map(
-                                          (v) => _buildVariationTile(
-                                            v,
-                                            isTablet,
-                                          ),
-                                        )
+                                        .map((v) =>
+                                            _buildVariationTile(v, isTablet))
                                         .toList(),
                                   ),
                                   const SizedBox(height: 14),
                                 ],
-                                if (widget.modifiers.isNotEmpty) ...[
+                                if (hasModifiers) ...[
                                   _sectionTitle(
                                     "Add Toppings",
                                     Icons.tune_rounded,
                                   ),
                                   const SizedBox(height: 8),
-                                  Wrap(
-                                    spacing: 10,
-                                    runSpacing: 10,
+                                  _animatedOptionRow(
+                                    index: hasVariants ? 1 : 0,
                                     children: widget.modifiers
-                                        .map(
-                                          (m) => _buildModifierTile(
-                                            m,
-                                            isTablet,
-                                          ),
-                                        )
+                                        .map((m) =>
+                                            _buildModifierTile(m, isTablet))
                                         .toList(),
                                   ),
                                   const SizedBox(height: 14),
@@ -628,19 +686,115 @@ class _CustomizationSheetState extends State<_CustomizationSheet> {
   }
 
   Widget _sectionTitle(String text, IconData icon) {
-    return Row(
-      children: [
-        Icon(icon, size: 18, color: Colors.black54),
-        const SizedBox(width: 8),
-        Text(
-          text,
-          style: const TextStyle(
-            fontSize: 15,
-            fontWeight: FontWeight.w700,
-            color: Colors.black87,
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: const Color(0xFFEBD8B9)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            width: 26,
+            height: 26,
+            decoration: const BoxDecoration(
+              color: Color(0xFFFFF4EA),
+              shape: BoxShape.circle,
+            ),
+            child: Icon(icon, size: 15, color: const Color(0xFF9F342C)),
           ),
+          const SizedBox(width: 8),
+          Text(
+            text,
+            style: const TextStyle(
+              fontSize: 14,
+              fontWeight: FontWeight.w800,
+              color: Color(0xFF2A211C),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _customizationNotice() {
+    return TweenAnimationBuilder<double>(
+      duration: const Duration(milliseconds: 260),
+      curve: Curves.easeOutCubic,
+      tween: Tween<double>(begin: 0, end: 1),
+      builder: (context, value, child) {
+        return Opacity(
+          opacity: value,
+          child: Transform.translate(
+            offset: Offset(0, 8 * (1 - value)),
+            child: child,
+          ),
+        );
+      },
+      child: Container(
+        width: double.infinity,
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+        decoration: BoxDecoration(
+          color: const Color(0xFFF7FFF8),
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(color: const Color(0xFFBDE5C2)),
         ),
-      ],
+        child: const Row(
+          children: [
+            Icon(
+              Icons.auto_awesome_rounded,
+              size: 18,
+              color: Color(0xFF1B8E3E),
+            ),
+            SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                "Size and toppings are available for this item",
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  color: Color(0xFF175D2D),
+                  fontSize: 12,
+                  fontWeight: FontWeight.w800,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _animatedOptionRow({
+    required int index,
+    required List<Widget> children,
+  }) {
+    return TweenAnimationBuilder<double>(
+      duration: Duration(milliseconds: 260 + (index * 80)),
+      curve: Curves.easeOutCubic,
+      tween: Tween<double>(begin: 0, end: 1),
+      builder: (context, value, child) {
+        return Opacity(
+          opacity: value,
+          child: Transform.translate(
+            offset: Offset(0, 10 * (1 - value)),
+            child: child,
+          ),
+        );
+      },
+      child: SizedBox(
+        height: 92,
+        child: ListView.separated(
+          scrollDirection: Axis.horizontal,
+          physics: const BouncingScrollPhysics(),
+          padding: const EdgeInsets.only(right: 4),
+          itemCount: children.length,
+          separatorBuilder: (_, __) => const SizedBox(width: 10),
+          itemBuilder: (_, itemIndex) => children[itemIndex],
+        ),
+      ),
     );
   }
 
@@ -677,7 +831,30 @@ class _CustomizationSheetState extends State<_CustomizationSheet> {
                   fontWeight: FontWeight.w800,
                 ),
               ),
-              const SizedBox(height: 8),
+              if (widget.variations.isNotEmpty || widget.modifiers.isNotEmpty)
+                Padding(
+                  padding: const EdgeInsets.only(top: 6),
+                  child: Container(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFFFF5E3),
+                      borderRadius: BorderRadius.circular(999),
+                      border: Border.all(color: const Color(0xFFE9BE72)),
+                    ),
+                    child: const Text(
+                      "Customize your item",
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        color: Color(0xFF7A2B22),
+                        fontSize: 11,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                  ),
+                ),
+              const SizedBox(height: 10),
               Row(
                 children: [
                   _qtyButton(
@@ -706,61 +883,80 @@ class _CustomizationSheetState extends State<_CustomizationSheet> {
   }
 
   Widget _buildVariationTile(Map<String, dynamic> v, bool isTablet) {
-    final bool selected = selectedVariation == v["id"];
+    final optionId = _optionId(v);
+    final bool selected = selectedVariation == optionId;
     final String label = _safeText(v["variation"] ?? v["name"]);
     final String priceText = "₹${v["price"] ?? 0}";
 
     return InkWell(
-      borderRadius: BorderRadius.circular(6),
-      onTap: () => setState(() => selectedVariation = v["id"] as int),
-      child: Container(
-        width: isTablet ? 180 : 150,
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      borderRadius: BorderRadius.circular(14),
+      onTap: () => setState(() {
+        selectedVariation = optionId;
+      }),
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 180),
+        curve: Curves.easeOut,
+        width: isTablet ? 192 : 158,
+        constraints: const BoxConstraints(minHeight: 82),
+        padding: const EdgeInsets.all(12),
         decoration: BoxDecoration(
-          color: selected ? kPrimary.withOpacity(0.12) : Colors.white,
-          borderRadius: BorderRadius.circular(6),
+          color: selected ? const Color(0xFFFFF4EA) : Colors.white,
+          borderRadius: BorderRadius.circular(14),
           border: Border.all(
-            color: selected ? kPrimary : Colors.grey.shade300,
-            width: selected ? 2 : 1,
+            color: selected ? const Color(0xFF9F342C) : Colors.grey.shade200,
+            width: selected ? 1.8 : 1,
           ),
           boxShadow: [
-            if (selected)
-              BoxShadow(
-                color: kPrimary.withOpacity(0.15),
-                blurRadius: 8,
-                offset: const Offset(0, 4),
-              ),
+            BoxShadow(
+              color: selected
+                  ? const Color(0xFF9F342C).withOpacity(0.16)
+                  : Colors.black.withOpacity(0.045),
+              blurRadius: selected ? 14 : 8,
+              offset: const Offset(0, 5),
+            ),
           ],
         ),
-        child: Row(
+        child: Stack(
           children: [
-            Icon(
-              selected ? Icons.radio_button_checked : Icons.radio_button_off,
-              color: selected ? kPrimary : Colors.grey.shade500,
-              size: 18,
+            Positioned(
+              right: 0,
+              top: 0,
+              child: Icon(
+                selected
+                    ? Icons.check_circle_rounded
+                    : Icons.radio_button_unchecked_rounded,
+                color: selected ? const Color(0xFF9F342C) : Colors.grey.shade400,
+                size: 19,
+              ),
             ),
-            const SizedBox(width: 8),
-            Expanded(
+            Padding(
+              padding: const EdgeInsets.only(right: 24),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
                   Text(
                     label,
-                    maxLines: 1,
+                    maxLines: 2,
                     overflow: TextOverflow.ellipsis,
                     style: TextStyle(
-                      fontWeight: FontWeight.w700,
-                      fontSize: isTablet ? 14 : 13,
-                      color: selected ? kPrimary : Colors.black87,
+                      fontWeight: FontWeight.w800,
+                      fontSize: isTablet ? 15 : 14,
+                      color: selected
+                          ? const Color(0xFF7A2B22)
+                          : const Color(0xFF1D1D1F),
+                      height: 1.08,
                     ),
                   ),
-                  const SizedBox(height: 2),
+                  const SizedBox(height: 8),
                   Text(
                     priceText,
                     style: TextStyle(
-                      fontSize: isTablet ? 12 : 11,
-                      fontWeight: FontWeight.w600,
-                      color: selected ? kPrimary : Colors.black54,
+                      fontSize: isTablet ? 17 : 16,
+                      fontWeight: FontWeight.w900,
+                      color: selected
+                          ? const Color(0xFF9F342C)
+                          : const Color(0xFF2E2E2E),
                     ),
                   ),
                 ],
@@ -773,66 +969,83 @@ class _CustomizationSheetState extends State<_CustomizationSheet> {
   }
 
   Widget _buildModifierTile(Map<String, dynamic> m, bool isTablet) {
-    final id = m["id"];
+    final id = _optionId(m);
     final selected = selectedModifiers.contains(id);
     final String label = _safeText(m["name"]);
     final String priceText = m["price"] != null ? "₹${m["price"]}" : "₹0";
 
     return InkWell(
-      borderRadius: BorderRadius.circular(6),
+      borderRadius: BorderRadius.circular(14),
       onTap: () {
+        if (id == null) return;
         setState(() {
           selected ? selectedModifiers.remove(id) : selectedModifiers.add(id);
         });
       },
-      child: Container(
-        width: isTablet ? 180 : 150,
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 180),
+        curve: Curves.easeOut,
+        width: isTablet ? 192 : 158,
+        constraints: const BoxConstraints(minHeight: 82),
+        padding: const EdgeInsets.all(12),
         decoration: BoxDecoration(
-          color: selected ? kAccent.withOpacity(0.12) : Colors.white,
-          borderRadius: BorderRadius.circular(6),
+          color: selected ? const Color(0xFFFFF7E8) : Colors.white,
+          borderRadius: BorderRadius.circular(14),
           border: Border.all(
-            color: selected ? kAccent : Colors.grey.shade300,
-            width: selected ? 2 : 1,
+            color: selected ? const Color(0xFFD78A19) : Colors.grey.shade200,
+            width: selected ? 1.8 : 1,
           ),
           boxShadow: [
-            if (selected)
-              BoxShadow(
-                color: kAccent.withOpacity(0.15),
-                blurRadius: 8,
-                offset: const Offset(0, 4),
-              ),
+            BoxShadow(
+              color: selected
+                  ? const Color(0xFFD78A19).withOpacity(0.15)
+                  : Colors.black.withOpacity(0.045),
+              blurRadius: selected ? 14 : 8,
+              offset: const Offset(0, 5),
+            ),
           ],
         ),
-        child: Row(
+        child: Stack(
           children: [
-            Icon(
-              selected ? Icons.check_circle : Icons.radio_button_unchecked,
-              color: selected ? kAccent : Colors.grey.shade500,
-              size: 18,
+            Positioned(
+              right: 0,
+              top: 0,
+              child: Icon(
+                selected
+                    ? Icons.check_circle_rounded
+                    : Icons.add_circle_outline_rounded,
+                color: selected ? const Color(0xFFD78A19) : Colors.grey.shade400,
+                size: 19,
+              ),
             ),
-            const SizedBox(width: 8),
-            Expanded(
+            Padding(
+              padding: const EdgeInsets.only(right: 24),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
                   Text(
                     label,
-                    maxLines: 1,
+                    maxLines: 2,
                     overflow: TextOverflow.ellipsis,
                     style: TextStyle(
-                      fontWeight: FontWeight.w700,
-                      fontSize: isTablet ? 14 : 13,
-                      color: selected ? kAccent : Colors.black87,
+                      fontWeight: FontWeight.w800,
+                      fontSize: isTablet ? 15 : 14,
+                      color: selected
+                          ? const Color(0xFF7A4A11)
+                          : const Color(0xFF1D1D1F),
+                      height: 1.08,
                     ),
                   ),
-                  const SizedBox(height: 2),
+                  const SizedBox(height: 8),
                   Text(
                     priceText,
                     style: TextStyle(
-                      fontSize: isTablet ? 12 : 11,
-                      fontWeight: FontWeight.w600,
-                      color: selected ? kAccent : Colors.black54,
+                      fontSize: isTablet ? 16 : 15,
+                      fontWeight: FontWeight.w900,
+                      color: selected
+                          ? const Color(0xFFD78A19)
+                          : const Color(0xFF2E2E2E),
                     ),
                   ),
                 ],
@@ -846,15 +1059,16 @@ class _CustomizationSheetState extends State<_CustomizationSheet> {
 
   Widget _buildActions() {
     return Container(
-      padding: const EdgeInsets.all(10),
+      padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
         color: Colors.white,
-        borderRadius: BorderRadius.circular(16),
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: const Color(0xFFF0E2CA)),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(0.08),
-            blurRadius: 12,
-            offset: const Offset(0, 4),
+            color: const Color(0xFF7A2B22).withOpacity(0.09),
+            blurRadius: 18,
+            offset: const Offset(0, 7),
           ),
         ],
       ),
@@ -863,11 +1077,12 @@ class _CustomizationSheetState extends State<_CustomizationSheet> {
           Expanded(
             child: OutlinedButton.icon(
               style: OutlinedButton.styleFrom(
-                foregroundColor: const Color(0xFF9F342C),
-                side: const BorderSide(color: Color(0xFF9F342C), width: 1.2),
-                padding: const EdgeInsets.symmetric(vertical: 12),
+                foregroundColor: const Color(0xFF7A2B22),
+                side: const BorderSide(color: Color(0xFFE2B85E), width: 1.2),
+                backgroundColor: const Color(0xFFFFFCF7),
+                padding: const EdgeInsets.symmetric(vertical: 13),
                 shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(12),
+                  borderRadius: BorderRadius.circular(14),
                 ),
               ),
               onPressed: widget.onCancel,
@@ -883,12 +1098,14 @@ class _CustomizationSheetState extends State<_CustomizationSheet> {
             flex: 2,
             child: ElevatedButton.icon(
               style: ElevatedButton.styleFrom(
-                backgroundColor: kPrimary,
-                padding: const EdgeInsets.symmetric(vertical: 12),
+                backgroundColor: Colors.green.shade700,
+                foregroundColor: Colors.white,
+                shadowColor: Colors.green.withOpacity(0.3),
+                padding: const EdgeInsets.symmetric(vertical: 13),
                 shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(12),
+                  borderRadius: BorderRadius.circular(14),
                 ),
-                elevation: 4,
+                elevation: 6,
               ),
               onPressed: canAdd
                   ? () {
@@ -896,10 +1113,12 @@ class _CustomizationSheetState extends State<_CustomizationSheet> {
                         "variation": selectedVariation == null
                             ? null
                             : widget.variations.firstWhere(
-                                (v) => v["id"] == selectedVariation,
+                                (v) => _optionId(v) == selectedVariation,
                               ),
                         "modifiers": widget.modifiers
-                            .where((m) => selectedModifiers.contains(m["id"]))
+                            .where(
+                              (m) => selectedModifiers.contains(_optionId(m)),
+                            )
                             .map(
                               (m) => {
                                 "id": m["id"],

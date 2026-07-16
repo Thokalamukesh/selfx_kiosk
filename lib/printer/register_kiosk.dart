@@ -25,16 +25,19 @@ class _RegisterKioskScreenState extends State<RegisterKioskScreen> {
   bool isLoading = true;
   bool _savingKioskName = false;
   bool _finishing = false;
+  bool _printerBusy = false;
   bool _active = true;
 
   String restaurantName = "Restaurant";
   String? restaurantAddress;
   Map<String, dynamic>? _settingsData;
+  Map<String, dynamic>? _selectedUsbPrinter;
 
   @override
   void initState() {
     super.initState();
     _loadSettings();
+    _loadSelectedUsbPrinter();
   }
 
   @override
@@ -185,15 +188,95 @@ class _RegisterKioskScreenState extends State<RegisterKioskScreen> {
       await prefs.setString("kiosk_name", name);
       await prefs.setString(KioskRestaurantMeta.kioskDisplayNameKey, name);
       await prefs.setString(KioskRestaurantMeta.restaurantNameKey, name);
-      _showSnackBar("Saved locally.", Color(0xFF1B8E3E));
+      _showSnackBar("Saved locally.", const Color(0xFF1B8E3E));
       OrderUtils.notifyInfoUpdated();
     } finally {
       if (mounted) setState(() => _savingKioskName = false);
     }
   }
 
+  Future<void> _loadSelectedUsbPrinter() async {
+    final printer = await _printerService.getSelectedUsbPrinter();
+    if (!mounted) return;
+    setState(() => _selectedUsbPrinter = printer);
+  }
+
+  Future<void> _selectUsbPrinter() async {
+    if (_printerBusy) return;
+
+    setState(() => _printerBusy = true);
+    try {
+      final printers = await _printerService.getUsbPrinters();
+      if (printers.isEmpty) {
+        _showSnackBar("No USB printer found", Colors.red);
+        return;
+      }
+
+      Map<String, dynamic>? selected;
+      if (printers.length == 1) {
+        selected = printers.first;
+      } else {
+        if (!mounted) return;
+        selected = await showDialog<Map<String, dynamic>>(
+          context: context,
+          barrierDismissible: false,
+          builder: (dialogContext) => AlertDialog(
+            title: const Text("Select USB Printer"),
+            content: SizedBox(
+              width: double.maxFinite,
+              child: ListView.separated(
+                shrinkWrap: true,
+                itemCount: printers.length,
+                separatorBuilder: (_, __) => const Divider(height: 1),
+                itemBuilder: (context, index) {
+                  final printer = printers[index];
+                  return ListTile(
+                    leading: const Icon(Icons.usb_rounded),
+                    title: Text(_printerName(printer)),
+                    subtitle: Text(_printerDeviceText(printer)),
+                    onTap: () => Navigator.pop(dialogContext, printer),
+                  );
+                },
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(dialogContext),
+                child: const Text("Cancel"),
+              ),
+            ],
+          ),
+        );
+      }
+
+      if (selected == null) return;
+
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString("printer_type", PrinterType.usb.name);
+      await _printerService.saveSelectedUsbPrinter(selected);
+      try {
+        await _usbService.requestUsbPermission(selected);
+      } catch (_) {}
+
+      if (!mounted) return;
+      setState(() => _selectedUsbPrinter = selected);
+      _showSnackBar("USB printer selected", Colors.green);
+    } catch (e) {
+      _showSnackBar(e.toString(), Colors.red);
+    } finally {
+      if (mounted) setState(() => _printerBusy = false);
+    }
+  }
+
   Future<void> _runTestPrint() async {
     try {
+      if (_selectedUsbPrinter == null) {
+        await _selectUsbPrinter();
+        if (_selectedUsbPrinter == null) return;
+      }
+
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString("printer_type", PrinterType.usb.name);
       await _printerService.testPrint(
         restaurantName: restaurantName,
         address: restaurantAddress,
@@ -223,6 +306,21 @@ class _RegisterKioskScreenState extends State<RegisterKioskScreen> {
     } catch (e) {
       _showSnackBar(e.toString(), Colors.red);
     }
+  }
+
+  String _printerName(Map<String, dynamic>? printer) {
+    if (printer == null) return "No printer selected";
+    final name = printer["name"] ?? printer["productName"];
+    final text = name?.toString().trim();
+    return text == null || text.isEmpty ? "USB Printer" : text;
+  }
+
+  String _printerDeviceText(Map<String, dynamic>? printer) {
+    if (printer == null) return "Select a USB printer before continuing.";
+    final deviceId = printer["deviceId"] ?? "-";
+    final vendorId = printer["vendorId"] ?? "-";
+    final productId = printer["productId"] ?? "-";
+    return "Device: $deviceId  VID: $vendorId  PID: $productId";
   }
 
   Future<void> _finishSetup() async {
@@ -396,7 +494,7 @@ class _RegisterKioskScreenState extends State<RegisterKioskScreen> {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       const Text(
-                        "Test Printer",
+                        "USB Printer",
                         style: TextStyle(
                           fontSize: 15,
                           fontWeight: FontWeight.w700,
@@ -404,15 +502,44 @@ class _RegisterKioskScreenState extends State<RegisterKioskScreen> {
                       ),
                       const SizedBox(height: 6),
                       Text(
-                        "Print a sample receipt to verify the printer is connected correctly.",
+                        _printerName(_selectedUsbPrinter),
+                        style: const TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        _printerDeviceText(_selectedUsbPrinter),
                         style: TextStyle(color: Colors.grey.shade600),
                       ),
                       const SizedBox(height: 14),
                       SizedBox(
                         height: 48,
                         width: double.infinity,
+                        child: OutlinedButton.icon(
+                          onPressed: _printerBusy ? null : _selectUsbPrinter,
+                          icon: _printerBusy
+                              ? const SizedBox(
+                                  height: 18,
+                                  width: 18,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                  ),
+                                )
+                              : const Icon(Icons.usb_rounded),
+                          label: const Text(
+                            "Select USB Printer",
+                            style: TextStyle(fontWeight: FontWeight.bold),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 10),
+                      SizedBox(
+                        height: 48,
+                        width: double.infinity,
                         child: ElevatedButton.icon(
-                          onPressed: _runTestPrint,
+                          onPressed: _printerBusy ? null : _runTestPrint,
                           icon: const Icon(
                             Icons.print_rounded,
                             color: Colors.white,

@@ -1,12 +1,18 @@
+import 'dart:async';
 import 'dart:convert';
 
+import 'package:dio/dio.dart';
+import 'package:flutter/foundation.dart' show Uint8List, compute;
+import 'package:image/image.dart' as img;
+import 'package:qr/qr.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sunmi_printer_plus/sunmi_printer_plus.dart';
 import 'package:sunmi_printer_plus/enums.dart';
 import 'package:sunmi_printer_plus/sunmi_style.dart';
-import 'package:flutter/foundation.dart';
 
 import '../api/kiosk_api.dart';
+import '../core/india_time.dart';
+import '../core/kiosk_log.dart';
 import '../core/receipt_print_mode.dart';
 import 'epson_usb_printer_service.dart';
 
@@ -14,8 +20,38 @@ enum PrinterType { internal, usb, lan }
 
 enum PrinterStatus { online, offline, notConfigured }
 
+const String _poweredBySelfxLabel = "Powered By";
+const String _poweredBySelfxBrand = "SELFX";
+
+String _printDateTime(DateTime value) {
+  return "${value.year}-${_twoIsolate(value.month)}-${_twoIsolate(value.day)} "
+      "${_twoIsolate(value.hour)}:${_twoIsolate(value.minute)}";
+}
+
+DateTime _receiptWallTime(DateTime? value) {
+  if (value == null) return IndiaTime.now();
+  return value.isUtc ? IndiaTime.toWallTime(value) : value;
+}
+
+DateTime _receiptWallTimeFromMillis(int? millis) {
+  if (millis == null) return IndiaTime.now();
+  return DateTime.fromMillisecondsSinceEpoch(millis);
+}
+
+List<String> _receiptFooterLines(dynamic raw) {
+  if (raw is List) {
+    final lines = raw
+        .map((value) => value?.toString().trim() ?? "")
+        .where((value) => value.isNotEmpty)
+        .toList();
+    if (lines.isNotEmpty) return lines;
+  }
+  return const ["Thank you for your order!"];
+}
+
 class PrinterService {
   final _usbService = EpsonUSBPrinterService();
+  final Map<String, Uint8List> _printImageCache = {};
   static const _usbPrinterConfigKey = "selected_usb_printer";
 
   bool _isTakeAwayOrder(String? orderType) {
@@ -88,6 +124,63 @@ class PrinterService {
     return List<dynamic>.from(printObject);
   }
 
+  List<List<dynamic>> _dedupeRawPrintObjects(List<List<dynamic>> objects) {
+    final seen = <String>{};
+    final out = <List<dynamic>>[];
+    for (final object in objects) {
+      String key;
+      try {
+        key = jsonEncode(object);
+      } catch (_) {
+        key = object.toString();
+      }
+      if (seen.add(key)) {
+        out.add(object);
+      }
+    }
+    return out;
+  }
+
+  bool _backendPrintObjectAlreadyHasBothCopies(List<List<dynamic>> objects) {
+    if (objects.length != 1) return false;
+    final object = objects.first;
+    var cutCount = 0;
+    var duplicateMarkers = 0;
+    var printableAfterFirstCut = false;
+    var sawCut = false;
+
+    for (final entry in object) {
+      if (entry is! Map) continue;
+      final type = entry['type']?.toString().trim().toLowerCase() ?? '';
+      if (type == 'cut' ||
+          type == 'fullcutpaper' ||
+          type == 'halfcutpaper' ||
+          type == 'full_cut_paper' ||
+          type == 'half_cut_paper') {
+        cutCount++;
+        sawCut = true;
+        continue;
+      }
+      if (type == 'text') {
+        final text = entry['text']?.toString() ?? '';
+        if (_isDuplicateCopyText(text) ||
+            text.toLowerCase().contains('counter copy')) {
+          duplicateMarkers++;
+        }
+        if (sawCut && text.trim().isNotEmpty) {
+          printableAfterFirstCut = true;
+        }
+      } else if (sawCut &&
+          (type == 'image' || type == 'logo' || type == 'qr')) {
+        printableAfterFirstCut = true;
+      }
+    }
+
+    return cutCount > 1 ||
+        (cutCount >= 1 && printableAfterFirstCut) ||
+        duplicateMarkers > 1;
+  }
+
   List<dynamic> _withCounterCopyHeader(
     List<dynamic> printObject, {
     required bool showParcel,
@@ -108,6 +201,7 @@ class PrinterService {
       'options': {'align': 1, 'bold': true},
     });
     header.add({'type': 'feedLine'});
+    header.add({'type': 'dottedLine'});
     return [...header, ...cloned];
   }
 
@@ -173,7 +267,10 @@ class PrinterService {
     required String restaurantName,
     String? address,
   }) async {
-    final type = await _getPrinterType();
+    final type = await _resolvePrinterTypeForTestPrint();
+    if (type == null) {
+      throw Exception("Printer not configured");
+    }
     if (type == PrinterType.lan) {
       throw Exception("Test print not supported for LAN printer");
     }
@@ -198,6 +295,7 @@ class PrinterService {
         printer: printer,
         printObject: usbData,
       );
+      kioskLog("USB test print sent", tag: "PRINT");
       return;
     }
   }
@@ -216,7 +314,10 @@ class PrinterService {
     num? discountAmount,
     List<String>? footerLines,
     String? orderType,
+    String? orderNumber,
     bool forceLocal = false,
+    bool backendOnly = false,
+    bool preserveBackendPrintFormat = false,
     bool requireBothCopies = false,
     bool counterCopyLabel = false,
     bool removeTaxLines = false,
@@ -226,56 +327,60 @@ class PrinterService {
     if (type == null) {
       throw Exception("Printer not configured");
     }
+    final orderRef = _backendOrderRef(orderId, orderNumber);
+    kioskLog(
+      "printOrder start order=$orderRef type=${type.name} forceLocal=$forceLocal backendOnly=$backendOnly items=${cartItems.length}",
+      tag: "PRINT",
+    );
     final receiptMode = await ReceiptPrintMode.getStoredMode();
+    final receiptOrderDate =
+        orderDate == null ? null : _receiptWallTime(orderDate);
     final bool shouldForceLocal = forceLocal;
     final num parcelTotal =
         parcelTotalOverride ?? _parcelTotalFromCart(cartItems);
 
     // ================= INTERNAL (Sunmi) =================
     if (type == PrinterType.internal) {
-      if (!shouldForceLocal && orderId > 0) {
+      if (!shouldForceLocal && orderRef != null) {
         try {
-          final res = await KioskApi().printReceipt(orderId);
-          final data = res.data;
-          var printObjects = _extractBackendPrintObjects(data);
-          printObjects = printObjects
-              .map((p) => _withReceiptHeaderName(p, restaurantName))
-              .toList();
-          if (requireBothCopies) {
-            if (printObjects.length == 1) {
-              final clone = counterCopyLabel
-                  ? _withCounterCopyHeader(
-                      printObjects.first,
-                      showParcel: _isTakeAwayOrder(orderType),
-                    )
-                  : _clonePrintObject(printObjects.first);
-              printObjects.add(clone);
-            } else if (counterCopyLabel && printObjects.length >= 2) {
-              if (!_hasCounterLabel(printObjects[1])) {
-                printObjects[1] = _withCounterCopyHeader(
-                  printObjects[1],
-                  showParcel: _isTakeAwayOrder(orderType),
-                );
-              }
-            }
-          }
-          if (removeTaxLines) {
-            printObjects = printObjects.map(_removeTaxLines).toList();
-          }
-          if (parcelTotal > 0) {
-            printObjects = printObjects
-                .map((p) => _injectParcelLine(p, parcelTotal))
-                .toList();
-          }
+          final printObjects = await _loadBackendPrintObjects(
+            orderId: orderId,
+            orderNumber: orderNumber,
+            type: type,
+            restaurantName: restaurantName,
+            orderType: orderType,
+            requireBothCopies: requireBothCopies,
+            counterCopyLabel: counterCopyLabel,
+            removeTaxLines: removeTaxLines,
+            parcelTotal: parcelTotal,
+            preserveBackendPrintFormat: preserveBackendPrintFormat,
+            backendTimeout:
+                backendOnly ? null : const Duration(milliseconds: 1500),
+          );
           if (printObjects.isNotEmpty) {
             for (final obj in printObjects) {
               await _printWithSunmiRaw(obj);
             }
+            kioskLog("backend Sunmi print complete order=$orderRef",
+                tag: "PRINT");
             return;
           }
-        } catch (_) {
+          if (backendOnly) {
+            throw Exception("Backend print object missing");
+          }
+        } catch (e, stackTrace) {
+          if (backendOnly) rethrow;
+          kioskLogError(
+            "backend Sunmi print failed; falling back local order=$orderRef",
+            tag: "PRINT",
+            error: e,
+            stackTrace: stackTrace,
+          );
           // Silent fallback to local builder
         }
+      }
+      if (backendOnly) {
+        throw Exception("Backend print unavailable for order $orderRef");
       }
 
       final receiptData = await compute(_buildReceiptIsolate, {
@@ -286,7 +391,7 @@ class PrinterService {
         "taxId": taxId,
         "paymentMode": paymentMode ?? "PAID",
         "transactionId": transactionId,
-        "orderDate": orderDate?.millisecondsSinceEpoch,
+        "orderDate": receiptOrderDate?.millisecondsSinceEpoch,
         "taxAmount": taxAmount,
         "discountAmount": discountAmount,
         "footerLines": footerLines,
@@ -296,6 +401,7 @@ class PrinterService {
       });
 
       await _printWithSunmi(receiptData);
+      kioskLog("local Sunmi print complete order=$orderId", tag: "PRINT");
       return;
     }
 
@@ -307,41 +413,22 @@ class PrinterService {
       }
 
       // ---- Prefer backend (Angular behavior) ----
-      if (!shouldForceLocal && orderId > 0) {
+      if (!shouldForceLocal && orderRef != null) {
         try {
-          final res = await KioskApi().printReceipt(orderId);
-          final data = res.data;
-
-          var printObjects = _extractBackendPrintObjects(data);
-          printObjects = printObjects
-              .map((p) => _withReceiptHeaderName(p, restaurantName))
-              .toList();
-          if (requireBothCopies) {
-            if (printObjects.length == 1) {
-              final clone = counterCopyLabel
-                  ? _withCounterCopyHeader(
-                      printObjects.first,
-                      showParcel: _isTakeAwayOrder(orderType),
-                    )
-                  : _clonePrintObject(printObjects.first);
-              printObjects.add(clone);
-            } else if (counterCopyLabel && printObjects.length >= 2) {
-              if (!_hasCounterLabel(printObjects[1])) {
-                printObjects[1] = _withCounterCopyHeader(
-                  printObjects[1],
-                  showParcel: _isTakeAwayOrder(orderType),
-                );
-              }
-            }
-          }
-          if (removeTaxLines) {
-            printObjects = printObjects.map(_removeTaxLines).toList();
-          }
-          if (parcelTotal > 0) {
-            printObjects = printObjects
-                .map((p) => _injectParcelLine(p, parcelTotal))
-                .toList();
-          }
+          final printObjects = await _loadBackendPrintObjects(
+            orderId: orderId,
+            orderNumber: orderNumber,
+            type: type,
+            restaurantName: restaurantName,
+            orderType: orderType,
+            requireBothCopies: requireBothCopies,
+            counterCopyLabel: counterCopyLabel,
+            removeTaxLines: removeTaxLines,
+            parcelTotal: parcelTotal,
+            preserveBackendPrintFormat: preserveBackendPrintFormat,
+            backendTimeout:
+                backendOnly ? null : const Duration(milliseconds: 1500),
+          );
           if (printObjects.isNotEmpty) {
             for (final obj in printObjects) {
               await _usbService.printRawPrintObject(
@@ -349,11 +436,26 @@ class PrinterService {
                 printObject: obj,
               );
             }
+            kioskLog("backend USB print complete order=$orderRef",
+                tag: "PRINT");
             return;
           }
-        } catch (e) {
+          if (backendOnly) {
+            throw Exception("Backend print object missing");
+          }
+        } catch (e, stackTrace) {
+          if (backendOnly) rethrow;
+          kioskLogError(
+            "backend USB print failed; falling back local order=$orderRef",
+            tag: "PRINT",
+            error: e,
+            stackTrace: stackTrace,
+          );
           // Silent fallback to local builder
         }
+      }
+      if (backendOnly) {
+        throw Exception("Backend print unavailable for order $orderRef");
       }
 
       // ---- Fallback (offline / API failed) ----
@@ -362,7 +464,7 @@ class PrinterService {
         "address": address,
         "taxId": taxId,
         "orderId": orderId,
-        "orderDate": orderDate?.millisecondsSinceEpoch,
+        "orderDate": receiptOrderDate?.millisecondsSinceEpoch,
         "transactionId": transactionId,
         "paymentMode": paymentMode ?? "PAID",
         "cartItems": cartItems,
@@ -375,18 +477,189 @@ class PrinterService {
       });
 
       await _usbService.printData(printer: printer, printObject: fallbackData);
+      kioskLog("local USB print complete order=$orderId", tag: "PRINT");
       return;
     }
 
     // ================= LAN PRINTER =================
     if (type == PrinterType.lan) {
       // Angular behavior: backend handles printing
-      if (orderId > 0) {
-        await KioskApi().printReceipt(orderId);
+      if (orderRef != null) {
+        await _fetchBackendPrintResponse(
+            orderId: orderId, orderNumber: orderNumber);
+        kioskLog("LAN/backend print complete order=$orderRef", tag: "PRINT");
         return;
       }
       throw Exception("Order ID missing for LAN print");
     }
+  }
+
+  String? _backendOrderRef(int orderId, String? orderNumber) {
+    final normalized = orderNumber?.trim();
+    if (normalized != null &&
+        normalized.isNotEmpty &&
+        normalized.toLowerCase() != "null") {
+      return normalized;
+    }
+    return orderId > 0 ? orderId.toString() : null;
+  }
+
+  Future<dynamic> _fetchBackendPrintResponse({
+    required int orderId,
+    String? orderNumber,
+    Duration? timeout,
+  }) async {
+    final normalized = orderNumber?.trim();
+    Future<dynamic> request;
+    if (normalized != null &&
+        normalized.isNotEmpty &&
+        normalized.toLowerCase() != "null") {
+      request = KioskApi().printReceiptByOrderNumber(normalized);
+    } else {
+      request = KioskApi().printReceipt(orderId);
+    }
+    if (timeout == null) return request;
+    return request.timeout(timeout);
+  }
+
+  Future<List<List<dynamic>>> _loadBackendPrintObjects({
+    required int orderId,
+    required PrinterType type,
+    String? orderNumber,
+    String? restaurantName,
+    String? orderType,
+    required bool requireBothCopies,
+    required bool counterCopyLabel,
+    required bool removeTaxLines,
+    required num parcelTotal,
+    required bool preserveBackendPrintFormat,
+    Duration? backendTimeout,
+  }) async {
+    final res = await _fetchBackendPrintResponse(
+      orderId: orderId,
+      orderNumber: orderNumber,
+      timeout: backendTimeout,
+    );
+    final data = res.data;
+    final orderRef = _backendOrderRef(orderId, orderNumber) ?? orderId;
+    final lineWidth = _backendLineWidth(data);
+    var rawPrintObjects = _extractBackendPrintObjects(data);
+    if (rawPrintObjects.isEmpty) {
+      rawPrintObjects = _buildOrderReceiptFromBackendResponse(
+        data,
+        lineWidth: lineWidth,
+      );
+    }
+    rawPrintObjects = _dedupeRawPrintObjects(rawPrintObjects);
+    if (rawPrintObjects.isEmpty) return const [];
+    final rawCustomerCopies = rawPrintObjects
+        .where((object) => !_isRawDuplicatePrintObject(object))
+        .toList();
+    final rawCounterCopies =
+        rawPrintObjects.where(_isRawDuplicatePrintObject).toList();
+    final selectedRawPrintObjects = <List<dynamic>>[];
+    final backendAlreadyHasBothCopies = requireBothCopies &&
+        _backendPrintObjectAlreadyHasBothCopies(
+          rawPrintObjects,
+        );
+    final backendHasDuplicateCopy = rawPrintObjects.any(
+      _isRawDuplicatePrintObject,
+    );
+    if (backendAlreadyHasBothCopies ||
+        (requireBothCopies &&
+            backendHasDuplicateCopy &&
+            rawPrintObjects.length == 1)) {
+      selectedRawPrintObjects.add(rawPrintObjects.first);
+    } else if (requireBothCopies) {
+      final customer = rawCustomerCopies.isNotEmpty
+          ? rawCustomerCopies.first
+          : rawPrintObjects.first;
+      final counter =
+          rawCounterCopies.isNotEmpty ? rawCounterCopies.first : customer;
+      selectedRawPrintObjects
+        ..add(customer)
+        ..add(counter);
+    } else {
+      selectedRawPrintObjects.add(
+        rawCustomerCopies.isNotEmpty
+            ? rawCustomerCopies.first
+            : rawPrintObjects.first,
+      );
+    }
+
+    var printObjects = selectedRawPrintObjects
+        .map((object) => _normalizeBackendPrintObject(
+              object,
+              lineWidth: lineWidth,
+            ))
+        .where((object) => object.isNotEmpty)
+        .toList();
+    if (type == PrinterType.usb) {
+      final withImages = <List<dynamic>>[];
+      for (final object in printObjects) {
+        withImages.add(await _embedUsbImageBytes(object));
+      }
+      printObjects = withImages;
+    }
+    if (!backendAlreadyHasBothCopies &&
+        !backendHasDuplicateCopy &&
+        requireBothCopies &&
+        counterCopyLabel &&
+        printObjects.length >= 2) {
+      if (!_hasCounterLabel(printObjects[1])) {
+        printObjects[1] = _withCounterCopyHeader(
+          printObjects[1],
+          showParcel: _isTakeAwayOrder(orderType),
+        );
+      }
+    }
+    if (!backendAlreadyHasBothCopies &&
+        !backendHasDuplicateCopy &&
+        requireBothCopies &&
+        printObjects.length >= 2) {
+      printObjects[0] = _withTrailingCut(printObjects[0], halfCut: true);
+      printObjects[1] = _withTrailingCut(printObjects[1], halfCut: false);
+    }
+    kioskLog(
+      "backend print objects order=$orderRef type=${type.name} ${_describePrintPayload(data)} count=${printObjects.length}",
+      tag: "PRINT",
+    );
+
+    if (preserveBackendPrintFormat) {
+      return printObjects;
+    }
+
+    printObjects = printObjects
+        .map((p) => _withReceiptHeaderName(p, restaurantName))
+        .toList();
+    if (!backendAlreadyHasBothCopies &&
+        !backendHasDuplicateCopy &&
+        requireBothCopies) {
+      if (printObjects.length == 1) {
+        final clone = counterCopyLabel
+            ? _withCounterCopyHeader(
+                printObjects.first,
+                showParcel: _isTakeAwayOrder(orderType),
+              )
+            : _clonePrintObject(printObjects.first);
+        printObjects.add(clone);
+      } else if (counterCopyLabel && printObjects.length >= 2) {
+        if (!_hasCounterLabel(printObjects[1])) {
+          printObjects[1] = _withCounterCopyHeader(
+            printObjects[1],
+            showParcel: _isTakeAwayOrder(orderType),
+          );
+        }
+      }
+    }
+    if (removeTaxLines) {
+      printObjects = printObjects.map(_removeTaxLines).toList();
+    }
+    if (parcelTotal > 0) {
+      printObjects =
+          printObjects.map((p) => _injectParcelLine(p, parcelTotal)).toList();
+    }
+    return printObjects;
   }
 
   // ================= DAILY SUMMARY PRINT =================
@@ -604,6 +877,28 @@ class PrinterService {
     );
   }
 
+  Future<PrinterType?> _resolvePrinterTypeForTestPrint() async {
+    final configured = await _getPrinterType();
+    if (configured != null) return configured;
+
+    final selectedUsb = await _getSelectedUsbPrinter();
+    if (selectedUsb != null) {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString("printer_type", PrinterType.usb.name);
+      return PrinterType.usb;
+    }
+
+    final usbPrinters = await _usbService.getPrinterList();
+    if (usbPrinters.length == 1) {
+      await saveSelectedUsbPrinter(usbPrinters.first);
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString("printer_type", PrinterType.usb.name);
+      return PrinterType.usb;
+    }
+
+    return null;
+  }
+
   // ===== MAP COMMON FORMAT → USB FORMAT =====
   Map<String, dynamic> _mapForUsb(Map<String, dynamic> item) {
     if (item['type'] != 'text') return item;
@@ -611,6 +906,7 @@ class PrinterService {
     final options = item['options'] ?? {};
     return {
       ...item,
+      'text': _printerSafeText((item['text'] ?? '').toString()),
       'options': {
         'align': options['align'] ?? 0,
         'fontStyle': options['bold'] == true ? 1 : 0,
@@ -664,9 +960,7 @@ class PrinterService {
     String? address,
   }) {
     const int width = 32;
-    final now = DateTime.now();
-    final printedAt =
-        "${now.year}-${_two(now.month)}-${_two(now.day)} ${_two(now.hour)}:${_two(now.minute)}";
+    final printedAt = _printDateTime(IndiaTime.now());
     final lines = <Map<String, dynamic>>[];
 
     void add(String text, {int align = 0, bool bold = false}) {
@@ -703,7 +997,6 @@ class PrinterService {
     add(center(printedAt), align: 1);
     add(divider());
 
-    lines.add({'type': 'feedLine'});
     lines.add({'type': 'fullCutPaper'});
     return lines;
   }
@@ -732,6 +1025,14 @@ class PrinterService {
         );
       } else if (item['type'] == 'dottedLine') {
         await _sunmiPrintText("--------------------------------", align: 0);
+      } else if (item['type'] == 'image') {
+        final options = item['options'] is Map
+            ? Map<String, dynamic>.from(item['options'])
+            : <String, dynamic>{};
+        await _printSunmiImage(
+          item,
+          align: _toInt(options['align']) ?? 1,
+        );
       } else if (item['type'] == 'feedLine') {
         await SunmiPrinter.lineWrap(1);
       } else if (item['type'] == 'halfCutPaper' ||
@@ -810,7 +1111,7 @@ class PrinterService {
         final large = widthTimes > 0 ||
             heightTimes > 0 ||
             options['size']?.toString() == 'lg';
-        final text = (entry['text'] ?? '').toString();
+        final text = _printerSafeText((entry['text'] ?? '').toString());
 
         if (align != 0) {
           await flushLine();
@@ -842,6 +1143,27 @@ class PrinterService {
       } else if (type == 'dottedLine') {
         await flushLine();
         await _sunmiPrintText('-' * width, align: 0);
+      } else if (type == 'image') {
+        await flushLine();
+        final options = entry['options'] is Map
+            ? Map<String, dynamic>.from(entry['options'])
+            : <String, dynamic>{};
+        await _printSunmiImage(
+          entry,
+          align: _toInt(options['align']) ?? 1,
+        );
+      } else if (type == 'qr') {
+        await flushLine();
+        final data = entry['data']?.toString().trim() ?? '';
+        if (data.isNotEmpty) {
+          await SunmiPrinter.setAlignment(SunmiPrintAlign.CENTER);
+          try {
+            await SunmiPrinter.printQRCode(data, size: 5);
+          } catch (_) {
+            await _sunmiPrintText(data, align: 1);
+          }
+          await SunmiPrinter.lineWrap(1);
+        }
       } else if (type == 'feedLine') {
         await flushLine();
         await SunmiPrinter.lineWrap(1);
@@ -885,9 +1207,7 @@ class PrinterService {
     List<String>? footerLines,
   }) {
     const int width = 32;
-    final dt = orderDate ?? DateTime.now();
-    final dateTime =
-        "${dt.year}-${_two(dt.month)}-${_two(dt.day)} ${_two(dt.hour)}:${_two(dt.minute)}";
+    final dateTime = _printDateTime(_receiptWallTime(orderDate));
 
     final List<Map<String, dynamic>> lines = [];
 
@@ -907,9 +1227,7 @@ class PrinterService {
 
     String divider() => '-' * width;
 
-    String center(String t) => t.length >= width
-        ? t
-        : t.padLeft((width + t.length) ~/ 2).padRight(width);
+    String center(String t) => t.trim();
 
     String lr(String l, String r) =>
         l.padRight(width - r.length).substring(0, width - r.length) + r;
@@ -1011,10 +1329,12 @@ class PrinterService {
     add(divider());
 
     // ================= FOOTER =================
-    final footer = footerLines ?? ["Thank you for your order!"];
+    final footer = _receiptFooterLines(footerLines);
     for (final f in footer) {
       add(center(f), align: 1);
     }
+    add(center(_poweredBySelfxLabel), align: 1);
+    add(center(_poweredBySelfxBrand), align: 1, bold: true);
 
     lines.add({'type': 'feedLine'});
     lines.add({'type': 'fullCutPaper'});
@@ -1032,9 +1352,7 @@ class PrinterService {
     String? address,
   }) {
     const int width = 32;
-    final now = DateTime.now();
-    final printedAt =
-        "${now.year}-${_two(now.month)}-${_two(now.day)} ${_two(now.hour)}:${_two(now.minute)}";
+    final printedAt = _printDateTime(IndiaTime.now());
 
     final List<Map<String, dynamic>> lines = [];
 
@@ -1116,9 +1434,7 @@ class PrinterService {
     String? taxId,
   }) {
     const int width = 32;
-    final now = DateTime.now();
-    final printedAt =
-        "${now.year}-${_two(now.month)}-${_two(now.day)} ${_two(now.hour)}:${_two(now.minute)}";
+    final printedAt = _printDateTime(IndiaTime.now());
 
     final List<Map<String, dynamic>> lines = [];
 
@@ -1217,9 +1533,7 @@ class PrinterService {
     String? taxId,
   }) {
     const int width = 32;
-    final now = DateTime.now();
-    final printedAt =
-        "${now.year}-${_two(now.month)}-${_two(now.day)} ${_two(now.hour)}:${_two(now.minute)}";
+    final printedAt = _printDateTime(IndiaTime.now());
 
     final List<Map<String, dynamic>> lines = [];
 
@@ -1239,9 +1553,7 @@ class PrinterService {
 
     String divider() => '-' * width;
 
-    String center(String t) => t.length >= width
-        ? t
-        : t.padLeft((width + t.length) ~/ 2).padRight(width);
+    String center(String t) => t.trim();
 
     String lr(String l, String r) =>
         l.padRight(width - r.length).substring(0, width - r.length) + r;
@@ -1325,9 +1637,7 @@ class PrinterService {
     String? taxId,
   }) {
     const int width = 32;
-    final now = DateTime.now();
-    final printedAt =
-        "${now.year}-${_two(now.month)}-${_two(now.day)} ${_two(now.hour)}:${_two(now.minute)}";
+    final printedAt = _printDateTime(IndiaTime.now());
 
     final List<Map<String, dynamic>> lines = [];
 
@@ -1512,7 +1822,7 @@ class PrinterService {
       return (" " * left) + text + (" " * right);
     }
 
-    String money(num value) => "₹${value.toStringAsFixed(2)}";
+    String money(num value) => "Rs ${value.toStringAsFixed(2)}";
 
     final titleText = restaurantName.trim();
     if (titleText.length <= width) {
@@ -1580,8 +1890,6 @@ class PrinterService {
     return text.length > width ? text.substring(0, width) : text;
   }
 
-  String _two(int value) => value.toString().padLeft(2, '0');
-
   List<dynamic> _removeTaxLines(List<dynamic> printObject) {
     return printObject.where((entry) {
       if (entry is Map && entry['type'] == 'text') {
@@ -1644,37 +1952,1004 @@ class PrinterService {
   }
 
   List<List<dynamic>> _extractBackendPrintObjects(dynamic data) {
-    if (data is! Map) return [];
-
     final List<List<dynamic>> result = [];
 
-    final rawList = data['printObjects'];
-    if (rawList is List && rawList.isNotEmpty) {
-      if (rawList.first is List) {
-        for (final obj in rawList) {
-          if (obj is List) {
-            result.add(List<dynamic>.from(obj));
+    void collectObject(dynamic value) {
+      if (value is! List || value.isEmpty) return;
+      final mapEntries = value.whereType<Map>().toList();
+      if (mapEntries.isNotEmpty) {
+        final hasPrintCommand = mapEntries.any((entry) {
+          final type = entry['type']?.toString().trim();
+          return type != null && type.isNotEmpty;
+        });
+        if (hasPrintCommand) {
+          result.add(List<dynamic>.from(value));
+          return;
+        }
+      }
+      if (value.first is List) {
+        for (final obj in value) {
+          collectObject(obj);
+        }
+        return;
+      }
+      if (value.first is Map) {
+        result.add(List<dynamic>.from(value));
+        return;
+      }
+      if (value.every((entry) => entry is String)) {
+        final lines = value
+            .map((entry) => entry.toString())
+            .where((entry) => entry.trim().isNotEmpty)
+            .map<dynamic>(
+              (entry) => {
+                'type': 'text',
+                'text': entry,
+                'options': {'align': 0},
+              },
+            )
+            .toList();
+        if (lines.isNotEmpty) {
+          lines.add({'type': 'feedLine'});
+          lines.add({'type': 'fullCutPaper'});
+          result.add(lines);
+        }
+      }
+    }
+
+    void collectFromMap(Map map, {int depth = 3}) {
+      if (depth <= 0) return;
+      for (final key in const [
+        'printObjects',
+        'print_objects',
+        'printObject',
+        'print_object',
+        'printObjectCustomer',
+        'print_object_customer',
+        'printObjectCounter',
+        'print_object_counter',
+        'customerPrintObject',
+        'customer_print_object',
+        'counterPrintObject',
+        'counter_print_object',
+      ]) {
+        collectObject(map[key]);
+      }
+
+      for (final key in const [
+        'data',
+        'receipt',
+        'print',
+        'payload',
+        'order',
+        'result',
+      ]) {
+        final nested = map[key];
+        if (nested is Map) {
+          collectFromMap(nested, depth: depth - 1);
+        }
+      }
+    }
+
+    if (data is Map) {
+      collectFromMap(data);
+    } else {
+      collectObject(data);
+    }
+    return result;
+  }
+
+  List<List<dynamic>> _buildOrderReceiptFromBackendResponse(
+    dynamic data, {
+    required int lineWidth,
+  }) {
+    if (data is! Map) return const [];
+    final root = Map<dynamic, dynamic>.from(data);
+    final body = root['data'] is Map
+        ? Map<dynamic, dynamic>.from(root['data'] as Map)
+        : root;
+    final order = _firstBackendMap([
+      body['order'],
+      root['order'],
+      body['receipt'] is Map ? (body['receipt'] as Map)['order'] : null,
+    ]);
+    if (order == null || order.isEmpty) return const [];
+
+    final restaurant = _firstBackendMap([
+      body['restaurant'],
+      root['restaurant'],
+      order['restaurant'],
+    ]);
+    final branch = _firstBackendMap([
+      body['branch'],
+      root['branch'],
+      order['branch'],
+    ]);
+    final settings = _firstBackendMap([
+      body['settings'],
+      body['receipt_settings'],
+      root['settings'],
+      root['receipt_settings'],
+    ]);
+
+    final width = lineWidth.clamp(28, 48);
+    final out = <dynamic>[];
+
+    void text(
+      String? value, {
+      int align = 0,
+      bool bold = false,
+      String? style,
+    }) {
+      final raw = value?.trim() ?? '';
+      if (raw.isEmpty || raw.toLowerCase() == 'null') return;
+      final options = {
+        'align': align,
+        'nOrgx': 0,
+        'widthTimes': 0,
+        'heightTimes': 0,
+        if (bold || style == 'title' || style == 'large_bold') 'bold': true,
+        if (bold || style == 'title' || style == 'large_bold') 'fontStyle': 1,
+      };
+      for (final line in _backendTextLines(raw, options, lineWidth: width)) {
+        out.add({'type': 'text', 'text': line, 'options': options});
+        out.add({'type': 'feedLine'});
+      }
+    }
+
+    void row(String label, String value, {bool bold = false}) {
+      final right = value.trim();
+      if (right.isEmpty || right.toLowerCase() == 'null') return;
+      for (final line
+          in _formatBackendRow(label, right, lineWidth: width).split('\n')) {
+        text(line, bold: bold);
+      }
+    }
+
+    void divider() {
+      if (_hasPrintableBackendContent(out)) {
+        out.add({'type': 'dottedLine'});
+      }
+    }
+
+    final restaurantName = _firstBackendText([
+      restaurant?['name'],
+      restaurant?['restaurant_name'],
+      body['restaurant_name'],
+      body['restaurant'],
+    ]);
+    final branchName = _firstBackendText([
+      branch?['name'],
+      branch?['branch_name'],
+      order['branch_name'],
+      body['branch_name'],
+    ]);
+    final address = _firstBackendText([
+      branch?['address'],
+      restaurant?['address'],
+      body['address'],
+    ]);
+    final taxId = _firstBackendText([
+      restaurant?['tax_id'],
+      restaurant?['gstin'],
+      restaurant?['gst_number'],
+      branch?['tax_id'],
+      branch?['gstin'],
+      order['tax_id'],
+    ]);
+    final token = _firstBackendText([order['token'], order['token_number']]);
+    final orderNumber = _firstBackendText([
+      order['order_number'],
+      order['number'],
+      order['order_no'],
+    ]);
+    final orderType = _formatBackendOrderType(order['type']);
+    final createdAt = _firstBackendText([
+      order['created_at'],
+      order['createdAt'],
+      order['date'],
+    ]);
+    final table = _firstBackendText([order['table_name'], order['table']]);
+    final customer = _firstBackendText([
+      order['customer_name'],
+      order['customer'],
+    ]);
+    final notes = _firstBackendText([order['notes'], order['note']]);
+    final currency = _firstBackendText([
+          order['currency_symbol'],
+          body['currency_symbol'],
+          restaurant?['currency_symbol'],
+        ]) ??
+        'Rs';
+
+    text(restaurantName, align: 1, bold: true, style: 'title');
+    text(branchName, align: 1);
+    text(address, align: 1);
+    if (taxId != null) text('GSTIN: $taxId', align: 1);
+    if (token != null) text('TOKEN #$token', align: 1, bold: true);
+    if (orderNumber != null) text('Order:$orderNumber', align: 1, bold: true);
+    final typeDate = [
+      if (orderType != null) orderType,
+      if (createdAt != null) _shortBackendDate(createdAt),
+    ].where((value) => value.trim().isNotEmpty).join(' - ');
+    text(typeDate, align: 1);
+    if (table != null) text('Table:$table');
+    if (customer != null) text('Customer:$customer');
+    if (notes != null) text('Note:$notes');
+    divider();
+
+    final items = order['items'];
+    if (items is List) {
+      for (final itemRaw in items) {
+        if (itemRaw is! Map) continue;
+        final item = Map<dynamic, dynamic>.from(itemRaw);
+        final qty = _toNum(item['quantity'] ?? item['qty']) ?? 1;
+        final name = _firstBackendText([
+              item['name'],
+              item['item_name'],
+              item['product_name'],
+            ]) ??
+            'Item';
+        final total =
+            _toNum(item['total'] ?? item['line_total'] ?? item['amount']) ??
+                ((_toNum(item['unit_price'] ?? item['price']) ?? 0) * qty);
+        row('${_formatQty(qty)}x $name', _backendMoney(total, currency),
+            bold: true);
+        final variant = _firstBackendText([
+          item['variant_name'],
+          item['variant'],
+        ]);
+        if (variant != null) text('($variant)');
+        final unit = _toNum(item['unit_price'] ?? item['price']);
+        if (unit != null) text('@ ${_backendMoney(unit, currency)} each');
+        final modifiers = item['modifiers'];
+        if (modifiers is List) {
+          for (final modRaw in modifiers) {
+            if (modRaw is! Map) continue;
+            final mod = Map<dynamic, dynamic>.from(modRaw);
+            final modName = _firstBackendText([
+              mod['option_name'],
+              mod['name'],
+              mod['label'],
+            ]);
+            if (modName == null) continue;
+            final amount = _toNum(mod['price_adjustment'] ?? mod['amount']);
+            if (amount != null && amount != 0) {
+              row('  + $modName', _backendMoney(amount, currency));
+            } else {
+              text('  + $modName');
+            }
           }
         }
-        return result;
-      }
-      if (rawList.first is Map) {
-        result.add(List<dynamic>.from(rawList));
-        return result;
       }
     }
+    divider();
 
-    final raw = data['printObject'];
-    if (raw is List) {
-      result.add(List<dynamic>.from(raw));
+    row('Subtotal', _backendMoney(_toNum(order['subtotal']) ?? 0, currency));
+    final discount = _toNum(order['discount_total']);
+    if (discount != null && discount > 0) {
+      row('Discount', '-${_backendMoney(discount, currency)}');
+    }
+    final extraCharges = order['extra_charges'];
+    if (extraCharges is List) {
+      for (final chargeRaw in extraCharges) {
+        if (chargeRaw is! Map) continue;
+        final charge = Map<dynamic, dynamic>.from(chargeRaw);
+        final amount = _toNum(charge['amount']);
+        if (amount == null || amount == 0) continue;
+        row(
+            _firstBackendText([charge['label'], charge['name']]) ??
+                'Extra Charge',
+            _backendMoney(amount, currency));
+      }
+    }
+    final serviceCharge = _toNum(order['service_charge']);
+    if (serviceCharge != null && serviceCharge > 0) {
+      row(
+        _firstBackendText([order['service_charge_label']]) ?? 'Service charge',
+        _backendMoney(serviceCharge, currency),
+      );
+    }
+    final taxBreakdown = order['tax_breakdown'];
+    if (taxBreakdown is List) {
+      for (final taxRaw in taxBreakdown) {
+        if (taxRaw is! Map) continue;
+        final tax = Map<dynamic, dynamic>.from(taxRaw);
+        final amount = _toNum(tax['amount']);
+        if (amount == null || amount == 0) continue;
+        final name = _firstBackendText([tax['name']]) ?? 'Tax';
+        final rate = _toNum(tax['rate']);
+        row(rate == null ? name : '$name (${_formatQty(rate)}%)',
+            _backendMoney(amount, currency));
+      }
+    }
+    divider();
+    row('TOTAL', _backendMoney(_toNum(order['total']) ?? 0, currency),
+        bold: true);
+
+    final status = _firstBackendText([order['payment_status']]);
+    if (status != null) {
+      text(_titleBackend(status), align: 1, bold: true);
+    }
+    final method = _firstBackendText([order['payment_method']]);
+    if (method != null) text('Method: ${_titleBackend(method)}', align: 1);
+    final transaction = _firstBackendText([order['transaction_id']]);
+    if (transaction != null) text('Transaction: $transaction', align: 1);
+
+    final qr = _firstBackendText([
+      order['tracking_url'],
+      order['payment_url'],
+      order['qr_data'],
+      order['upi_url'],
+    ]);
+    if (qr != null) {
+      out.add({
+        'type': 'qr',
+        'data': _cleanBackendQrData(qr),
+        'size': 4,
+        'errorLevel': 1,
+        'options': {'align': 1, 'nOrgx': 0},
+      });
     }
 
-    final rawCounter = data['printObjectCounter'];
-    if (rawCounter is List) {
-      result.add(List<dynamic>.from(rawCounter));
+    text(
+      _firstBackendText([settings?['footer_line'], body['footer_line']]) ??
+          'Thank you for your order!',
+      align: 1,
+    );
+    divider();
+    text(_poweredBySelfxLabel, align: 1);
+    text(_poweredBySelfxBrand, align: 1, bold: true);
+
+    return out.isEmpty ? const [] : [out];
+  }
+
+  Map<dynamic, dynamic>? _firstBackendMap(Iterable<dynamic> values) {
+    for (final value in values) {
+      if (value is Map && value.isNotEmpty) {
+        return Map<dynamic, dynamic>.from(value);
+      }
+    }
+    return null;
+  }
+
+  String? _firstBackendText(Iterable<dynamic> values) {
+    for (final value in values) {
+      if (value == null) continue;
+      if (value is Map || value is List) continue;
+      final text = value.toString().trim();
+      if (text.isNotEmpty && text.toLowerCase() != 'null') return text;
+    }
+    return null;
+  }
+
+  num? _toNum(dynamic value) {
+    if (value == null) return null;
+    if (value is num) return value;
+    return num.tryParse(value.toString().replaceAll(',', '').trim());
+  }
+
+  String _backendMoney(num value, String currency) {
+    final prefix = currency.trim().isEmpty ? 'Rs' : currency.trim();
+    return '$prefix${value.toStringAsFixed(2)}';
+  }
+
+  String _formatQty(num value) {
+    if (value == value.roundToDouble()) return value.toInt().toString();
+    return value
+        .toStringAsFixed(2)
+        .replaceFirst(RegExp(r'0+$'), '')
+        .replaceFirst(RegExp(r'\.$'), '');
+  }
+
+  String? _formatBackendOrderType(dynamic raw) {
+    final value = raw?.toString().trim();
+    if (value == null || value.isEmpty || value.toLowerCase() == 'null') {
+      return null;
+    }
+    final normalized = value.toLowerCase().replaceAll('_', ' ');
+    if (normalized.contains('dine')) return 'Dine in';
+    if (normalized.contains('take') || normalized.contains('pick')) {
+      return 'Take away';
+    }
+    return _titleBackend(value.replaceAll('_', ' '));
+  }
+
+  String _titleBackend(String value) {
+    return value
+        .replaceAll('_', ' ')
+        .split(RegExp(r'\s+'))
+        .where((part) => part.isNotEmpty)
+        .map((part) => part[0].toUpperCase() + part.substring(1).toLowerCase())
+        .join(' ');
+  }
+
+  String _shortBackendDate(String value) {
+    final parsed = DateTime.tryParse(value);
+    if (parsed == null) return value;
+    final wall = _receiptWallTime(parsed);
+    const months = [
+      'Jan',
+      'Feb',
+      'Mar',
+      'Apr',
+      'May',
+      'Jun',
+      'Jul',
+      'Aug',
+      'Sep',
+      'Oct',
+      'Nov',
+      'Dec',
+    ];
+    final hour12 = wall.hour % 12 == 0 ? 12 : wall.hour % 12;
+    final ampm = wall.hour >= 12 ? 'PM' : 'AM';
+    return '${wall.day} ${months[wall.month - 1]} ${wall.year} '
+        '${hour12.toString().padLeft(2, '0')}:'
+        '${wall.minute.toString().padLeft(2, '0')} $ampm';
+  }
+
+  String _describePrintPayload(dynamic data) {
+    Map? payload;
+    if (data is Map) {
+      payload = data['data'] is Map ? data['data'] as Map : data;
+    }
+    if (payload == null) return "payload=unknown";
+    final paper = payload['paper']?.toString();
+    final version = payload['version']?.toString();
+    final fontSize = payload['font_size']?.toString();
+    final rawObject = payload['print_object'] ??
+        payload['printObject'] ??
+        payload['print_objects'] ??
+        payload['printObjects'];
+    final length = rawObject is List ? rawObject.length : 0;
+    return "payload version=${version ?? '-'} paper=${paper ?? '-'} font=${fontSize ?? '-'} rawItems=$length";
+  }
+
+  int _backendLineWidth(dynamic data) {
+    Map? payload;
+    if (data is Map) {
+      payload = data['data'] is Map ? data['data'] as Map : data;
+    }
+    final paper = payload?['paper']?.toString().trim().toLowerCase() ?? '';
+    switch (paper) {
+      case '112mm':
+        return 67;
+      case '80mm':
+        return 48;
+      case '56mm':
+      default:
+        return 32;
+    }
+  }
+
+  List<dynamic> _normalizeBackendPrintObject(
+    List<dynamic> printObject, {
+    required int lineWidth,
+  }) {
+    final normalized = <dynamic>[];
+    var footerStarted = false;
+
+    void addTextLine(String text, Map<String, dynamic> options) {
+      final trimmed = text.trimRight();
+      if (trimmed.trim().isEmpty) return;
+      final printOptions = {
+        ...options,
+        'align': _backendAlign(options['align']),
+        'nLan': _toInt(options['nLan']) ?? 0,
+        'nOrgx': _toInt(options['nOrgx']) ?? 0,
+      };
+      final previousTextIndex = normalized.isNotEmpty &&
+              normalized.last is Map &&
+              (normalized.last as Map)['type'] == 'feedLine'
+          ? normalized.length - 2
+          : normalized.length - 1;
+      if (previousTextIndex >= 0) {
+        final previous = normalized[previousTextIndex];
+        if (previous is Map && previous['type'] == 'text') {
+          final previousText =
+              previous['text']?.toString().trim().toLowerCase();
+          if (previousText == trimmed.trim().toLowerCase()) return;
+        }
+      }
+      normalized.add({
+        'type': 'text',
+        'text': trimmed,
+        'options': printOptions,
+      });
+      normalized.add({'type': 'feedLine'});
     }
 
-    return result;
+    void addText(String text, Map<String, dynamic> options) {
+      final lines = _backendTextLines(text, options, lineWidth: lineWidth);
+      for (final line in lines) {
+        addTextLine(line, options);
+      }
+    }
+
+    bool addImage(Map entry) {
+      final image = _backendImageCommand(entry, lineWidth: lineWidth);
+      if (image == null) return false;
+      normalized.add(image);
+      normalized.add({'type': 'feedLine'});
+      return true;
+    }
+
+    for (final entry in printObject) {
+      if (entry is! Map) continue;
+      final type = entry['type']?.toString().trim().toLowerCase() ?? '';
+
+      if (type == 'init') {
+        continue;
+      }
+
+      if (type == 'powered_by' || type == 'poweredby' || type == 'powered-by') {
+        if (addImage(entry)) {
+          footerStarted = true;
+          continue;
+        }
+        addText(_poweredBySelfxLabel, {'align': 1});
+        addText(_poweredBySelfxBrand, {'align': 1, 'bold': true});
+        footerStarted = true;
+        continue;
+      }
+
+      if (type == 'logo') {
+        if (addImage(entry)) {
+          if (footerStarted || _isFooterImage(entry)) {
+            footerStarted = true;
+          }
+          continue;
+        }
+        if (footerStarted || _isFooterImage(entry)) {
+          footerStarted = true;
+        }
+        continue;
+      }
+
+      if (type == 'image') {
+        if (addImage(entry)) {
+          if (footerStarted || _isFooterImage(entry)) {
+            footerStarted = true;
+          }
+          continue;
+        }
+        if (footerStarted || _isFooterImage(entry)) {
+          footerStarted = true;
+        }
+        continue;
+      }
+
+      if (type == 'text') {
+        final text = entry['text']?.toString() ?? '';
+        if (text.trim().isEmpty) continue;
+        if (_isDuplicateCopyText(text)) continue;
+        addText(text, _backendTextOptions(entry, text: text));
+        if (_isReceiptFooterText(text)) {
+          footerStarted = true;
+        }
+        continue;
+      }
+
+      if (type == 'row') {
+        final left = entry['left']?.toString() ?? '';
+        final right = entry['right']?.toString() ?? '';
+        final line = _formatBackendRow(left, right, lineWidth: lineWidth);
+        if (line.trim().isEmpty) continue;
+        for (final part in line.split('\n')) {
+          addText(part, _backendTextOptions(entry));
+        }
+        continue;
+      }
+
+      if (type == 'divider' || type == 'line' || type == 'dottedline') {
+        if (!_hasPrintableBackendContent(normalized)) {
+          continue;
+        }
+        normalized.add({'type': 'dottedLine'});
+        continue;
+      }
+
+      if (type == 'feed' || type == 'feedline') {
+        final lines = (_toInt(entry['lines']) ?? 1).clamp(1, 8);
+        for (var i = 0; i < lines; i++) {
+          normalized.add({'type': 'feedLine'});
+        }
+        continue;
+      }
+
+      if (type == 'cut' || type == 'fullcutpaper' || type == 'halfcutpaper') {
+        final mode = entry['mode']?.toString().toLowerCase() ?? '';
+        normalized.add({
+          'type': mode == 'half' || type == 'halfcutpaper'
+              ? 'halfCutPaper'
+              : 'fullCutPaper',
+        });
+        continue;
+      }
+
+      if (type == 'qr' || type == 'qrcode' || type == 'qr_code') {
+        final data = _cleanBackendQrData(_firstNonEmptyString([
+              entry['data'],
+              entry['text'],
+              entry['value'],
+              entry['payload'],
+              entry['content'],
+              entry['url'],
+              entry['qr_url'],
+              entry['qrUrl'],
+              entry['tracking_url'],
+              entry['trackingUrl'],
+              entry['payment_url'],
+              entry['paymentUrl'],
+              entry['checkout_url'],
+              entry['checkoutUrl'],
+              entry['qr_data'],
+              entry['qrData'],
+              entry['qr_code'],
+              entry['qrCode'],
+              entry['upi_qr'],
+              entry['upiQr'],
+              entry['upi_url'],
+              entry['upiUrl'],
+            ]) ??
+            '');
+        if (data.isEmpty) continue;
+        normalized.add({
+          'type': 'qr',
+          'data': data,
+          'size': (_toInt(entry['size'] ??
+                      entry['module_size'] ??
+                      entry['moduleSize']) ??
+                  4)
+              .clamp(3, 6),
+          'max_width_dots': lineWidth <= 32 ? 320 : 360,
+          'paper_width_dots': _paperWidthDotsForBackend(lineWidth),
+          'errorLevel': _qrErrorLevel(entry['error_level'] ??
+              entry['errorLevel'] ??
+              entry['correction'] ??
+              entry['ecc']),
+          'options': {'align': _backendAlign(entry['align'])},
+        });
+        continue;
+      }
+
+      normalized.add(_sanitizeNullTokens(entry));
+    }
+    return normalized;
+  }
+
+  bool _isDuplicatePrintObject(List<dynamic> printObject) {
+    for (final entry in printObject) {
+      if (entry is Map && entry['type'] == 'text') {
+        final text = entry['text']?.toString() ?? '';
+        if (_isDuplicateCopyText(text)) return true;
+      }
+    }
+    return false;
+  }
+
+  bool _isRawDuplicatePrintObject(List<dynamic> printObject) {
+    return _isDuplicatePrintObject(printObject);
+  }
+
+  bool _isDuplicateCopyText(String text) {
+    final value = text.trim().toLowerCase();
+    return value == 'duplicate' ||
+        value == 'duplicat' ||
+        value == 'duplicate copy' ||
+        value.contains('duplicate copy');
+  }
+
+  bool _hasPrintableBackendContent(List<dynamic> entries) {
+    for (final entry in entries) {
+      if (entry is! Map) continue;
+      final type = entry['type'];
+      if (type == 'text') {
+        final text = entry['text']?.toString().trim() ?? '';
+        if (text.isNotEmpty) return true;
+      }
+      if (type == 'image' || type == 'qr') return true;
+    }
+    return false;
+  }
+
+  bool _isReceiptFooterText(String text) {
+    final value = text.trim().toLowerCase();
+    if (value.isEmpty) return false;
+    return value.contains('thank you') ||
+        value.contains('thanks for your order') ||
+        value.contains('visit again');
+  }
+
+  List<dynamic> _withTrailingCut(
+    List<dynamic> printObject, {
+    required bool halfCut,
+  }) {
+    final out = _clonePrintObject(printObject);
+    while (out.isNotEmpty) {
+      final last = out.last;
+      if (last is Map &&
+          (last['type'] == 'feedLine' ||
+              last['type'] == 'fullCutPaper' ||
+              last['type'] == 'halfCutPaper')) {
+        out.removeLast();
+        continue;
+      }
+      break;
+    }
+    out.add({'type': 'feedLine'});
+    out.add({'type': 'feedLine'});
+    out.add({'type': halfCut ? 'halfCutPaper' : 'fullCutPaper'});
+    return out;
+  }
+
+  bool _isFooterImage(Map entry) {
+    final source = [
+      entry['label'],
+      entry['name'],
+      entry['bind'],
+      entry['toggle'],
+      entry['alt'],
+      entry['purpose'],
+      entry['role'],
+    ].map((value) => value?.toString().trim().toLowerCase() ?? '').join(' ');
+    return source.contains('powered') ||
+        source.contains('powered_by') ||
+        source.contains('logo') ||
+        source.contains('footer');
+  }
+
+  Map<String, dynamic>? _backendImageCommand(
+    Map entry, {
+    required int lineWidth,
+  }) {
+    final url = _firstNonEmptyString([
+      entry['url'],
+      entry['src'],
+      entry['image_url'],
+      entry['imageUrl'],
+      entry['logo_url'],
+      entry['logoUrl'],
+      entry['powered_by_url'],
+      entry['poweredByUrl'],
+    ]);
+    final base64 = _firstNonEmptyString([
+      entry['base64'],
+      entry['image_base64'],
+      entry['imageBase64'],
+      entry['logo_base64'],
+      entry['logoBase64'],
+      entry['data_uri'],
+      entry['dataUri'],
+    ]);
+    if (url == null && base64 == null) return null;
+
+    final maxWidth = _toInt(entry['max_width_dots'] ??
+            entry['maxWidthDots'] ??
+            entry['width']) ??
+        (_isFooterImage(entry) ? 220 : 192);
+    return {
+      'type': 'image',
+      if (url != null) 'url': url,
+      if (base64 != null) 'base64': base64,
+      'max_width_dots': maxWidth.clamp(96, 384),
+      'paper_width_dots': _paperWidthDotsForBackend(lineWidth),
+      'options': {'align': _backendAlign(entry['align'])},
+    };
+  }
+
+  int _paperWidthDotsForBackend(int lineWidth) {
+    if (lineWidth <= 32) return 384;
+    if (lineWidth <= 48) return 576;
+    return 832;
+  }
+
+  String? _firstNonEmptyString(Iterable<dynamic> values) {
+    for (final value in values) {
+      final text = value?.toString().trim();
+      if (text != null && text.isNotEmpty && text.toLowerCase() != 'null') {
+        return text;
+      }
+    }
+    return null;
+  }
+
+  String _cleanBackendQrData(String value) {
+    var text = value.trim().replaceAll(r'\/', '/');
+    text = text.replaceAll(RegExp(r'[\r\n\t]'), '');
+    if (text.length >= 2 &&
+        ((text.startsWith('"') && text.endsWith('"')) ||
+            (text.startsWith("'") && text.endsWith("'")))) {
+      text = text.substring(1, text.length - 1).trim();
+    }
+    return text;
+  }
+
+  int _qrErrorLevel(dynamic raw) {
+    if (raw is num) return raw.toInt().clamp(0, 3);
+    final value = raw?.toString().trim().toLowerCase() ?? '';
+    switch (value) {
+      case 'l':
+      case 'low':
+        return 0;
+      case 'q':
+        return 2;
+      case 'h':
+      case 'high':
+        return 3;
+      case 'm':
+      case 'medium':
+      default:
+        return _toInt(value)?.clamp(0, 3) ?? 1;
+    }
+  }
+
+  Map<String, dynamic> _backendTextOptions(Map entry, {String? text}) {
+    final existing = entry['options'] is Map
+        ? Map<String, dynamic>.from(entry['options'])
+        : <String, dynamic>{};
+    final style = entry['style']?.toString().toLowerCase() ?? '';
+    final rawText = text?.trim() ?? '';
+    final bold = style.contains('bold') ||
+        style.contains('title') ||
+        existing['bold'] == true ||
+        (_toInt(existing['fontStyle']) ?? 0) > 0;
+    final large = (style.contains('large') || style.contains('title')) &&
+        _allowBackendLargeText(rawText);
+    final align = _shouldCenterBackendText(rawText, style)
+        ? 1
+        : _backendAlign(entry['align'] ?? existing['align']);
+    return {
+      ...existing,
+      'align': align,
+      'nOrgx': 0,
+      if (bold) 'bold': true,
+      if (bold) 'fontStyle': 1,
+      'widthTimes': large ? 1 : 0,
+      'heightTimes': large ? 1 : 0,
+      if (large) 'size': 'lg',
+    };
+  }
+
+  bool _allowBackendLargeText(String text) {
+    final value = text.trim();
+    if (value.isEmpty) return false;
+    if (value.length > 24) return false;
+    final lower = value.toLowerCase();
+    if (lower.startsWith('order:') ||
+        lower.startsWith('transaction:') ||
+        lower.contains('http')) {
+      return false;
+    }
+    return true;
+  }
+
+  bool _shouldCenterBackendText(String text, String style) {
+    final value = text.trim().toLowerCase();
+    if (value.isEmpty) return false;
+    if (style.contains('title') || style.contains('center')) return true;
+    if (value.startsWith('token')) return true;
+    if (value == 'paid' ||
+        value == 'payment pending' ||
+        value.startsWith('method:') ||
+        value.startsWith('transaction:')) {
+      return true;
+    }
+    if (_isReceiptFooterText(text)) return true;
+    if (value == 'main') return true;
+    if (!value.contains(':') &&
+        !value.contains(r'$') &&
+        !RegExp(r'^\d+\s*x\b').hasMatch(value) &&
+        !value.contains('dine') &&
+        !value.contains('order') &&
+        value.length <= 24) {
+      return true;
+    }
+    return false;
+  }
+
+  List<String> _backendTextLines(
+    String text,
+    Map<String, dynamic> options, {
+    required int lineWidth,
+  }) {
+    final width = lineWidth.clamp(24, 48);
+    final align = _toInt(options['align']) ?? 0;
+    final out = <String>[];
+    for (final raw in text.split(RegExp(r'\r?\n'))) {
+      final trimmedRaw = align == 0 ? raw.trim() : raw.trimRight();
+      if (trimmedRaw.trim().isEmpty) continue;
+
+      final dashMatch = RegExp(r'-{3,}').firstMatch(trimmedRaw);
+      if (dashMatch != null) {
+        final prefix =
+            _cleanBackendText(trimmedRaw.substring(0, dashMatch.start));
+        if (prefix.trim().isEmpty) {
+          out.add('-' * width);
+          continue;
+        }
+        if (_looksLikeBackendItemLine(prefix)) {
+          out.addAll(_wrap(prefix, width));
+          continue;
+        }
+        if (prefix.length >= width) {
+          out.addAll(_wrap(prefix, width));
+        } else {
+          out.add(prefix + ('-' * (width - prefix.length)));
+        }
+        continue;
+      }
+
+      final value = align == 0
+          ? _cleanBackendText(trimmedRaw).trimLeft()
+          : _cleanBackendText(trimmedRaw);
+      final lines = value.length <= width ? [value] : _wrap(value, width);
+      if (align == 0) {
+        out.addAll(lines.map((line) => line.trimLeft()));
+      } else {
+        out.addAll(lines.map((line) => line.trim()));
+      }
+    }
+    return out;
+  }
+
+  bool _looksLikeBackendItemLine(String value) {
+    return RegExp(r'^\s*\d+\s*x\b', caseSensitive: false).hasMatch(value);
+  }
+
+  String _cleanBackendText(String value) {
+    var out = _printerSafeText(value).trimRight();
+    if (out.trim().toLowerCase().startsWith('thank you')) {
+      return 'Thank you for your order!';
+    }
+    out = out.replaceAllMapped(
+      RegExp(r'\b(Customer|Order|Subtotal|Total):(?=\S)', caseSensitive: false),
+      (match) => '${match.group(1)}: ',
+    );
+    if (RegExp(r'^\s*\d+\s*x-', caseSensitive: false).hasMatch(out)) {
+      out = out.replaceFirstMapped(
+        RegExp(r'^(\s*\d+\s*)x-', caseSensitive: false),
+        (match) => '${match.group(1)}x ',
+      );
+      out = out.replaceAll('-', ' ');
+      out = out.replaceAll(RegExp(r'\s{2,}'), ' ');
+    }
+    return out;
+  }
+
+  int _backendAlign(dynamic raw) {
+    if (raw is num) return raw.toInt().clamp(0, 2);
+    final value = raw?.toString().trim().toLowerCase() ?? '';
+    if (value == 'center' || value == 'centre') return 1;
+    if (value == 'right' || value == 'end') return 2;
+    return 0;
+  }
+
+  String _formatBackendRow(
+    String left,
+    String right, {
+    required int lineWidth,
+  }) {
+    final width = lineWidth.clamp(24, 80);
+    final l = left.trim();
+    final r = right.trim();
+    if (r.isEmpty) return l;
+    if (l.isEmpty) return r.padLeft(width);
+    final rightWidth = r.length.clamp(6, 12).toInt();
+    final leftWidth = width - rightWidth;
+    final wrappedLeft = _wrap(l, leftWidth);
+    final leftLines = wrappedLeft.isEmpty ? [''] : wrappedLeft;
+    final lines = <String>[];
+    for (var i = 0; i < leftLines.length; i++) {
+      final line = leftLines[i];
+      if (i == 0) {
+        lines.add(line.padRight(leftWidth) + r.padLeft(rightWidth));
+      } else {
+        lines.add(line);
+      }
+    }
+    return lines.join('\n');
   }
 
   dynamic _sanitizeNullTokens(dynamic value) {
@@ -1818,6 +3093,192 @@ class PrinterService {
     return scaled;
   }
 
+  Future<List<dynamic>> _embedUsbImageBytes(List<dynamic> printObject) async {
+    final out = <dynamic>[];
+    for (final entry in printObject) {
+      if (entry is Map && _isQrEntry(entry)) {
+        final imageEntry = _qrEntryAsImage(entry);
+        if (imageEntry != null) {
+          out.add(imageEntry);
+          continue;
+        }
+      }
+      if (entry is Map && entry['type'] == 'image') {
+        try {
+          final bytes = await _loadPrintImageBytes(entry);
+          if (bytes != null && bytes.isNotEmpty) {
+            out.add({
+              ...entry,
+              'base64': base64Encode(bytes),
+            });
+            continue;
+          }
+        } catch (e, stackTrace) {
+          kioskLogError(
+            "USB image embed skipped source=${_printImageSource(entry)}",
+            tag: "PRINT",
+            error: e,
+            stackTrace: stackTrace,
+          );
+        }
+      }
+      out.add(entry);
+    }
+    return out;
+  }
+
+  bool _isQrEntry(Map entry) {
+    final type = entry['type']?.toString().trim().toLowerCase() ?? '';
+    return type == 'qr' || type == 'qrcode' || type == 'qr_code';
+  }
+
+  Map<String, dynamic>? _qrEntryAsImage(Map entry) {
+    final data = _cleanBackendQrData(_firstNonEmptyString([
+          entry['data'],
+          entry['text'],
+          entry['value'],
+          entry['payload'],
+          entry['content'],
+          entry['url'],
+          entry['qr_url'],
+          entry['qrUrl'],
+          entry['tracking_url'],
+          entry['trackingUrl'],
+          entry['payment_url'],
+          entry['paymentUrl'],
+          entry['checkout_url'],
+          entry['checkoutUrl'],
+          entry['qr_data'],
+          entry['qrData'],
+          entry['qr_code'],
+          entry['qrCode'],
+          entry['upi_qr'],
+          entry['upiQr'],
+          entry['upi_url'],
+          entry['upiUrl'],
+        ]) ??
+        '');
+    if (data.isEmpty) return null;
+
+    final paperWidth = _toInt(entry['paper_width_dots']) ?? 384;
+    final maxWidth =
+        (_toInt(entry['max_width_dots'] ?? entry['maxWidthDots']) ??
+                (paperWidth <= 384 ? 320 : 360))
+            .clamp(220, paperWidth);
+    final png = _buildQrPng(data, maxWidth);
+    return {
+      'type': 'image',
+      'base64': base64Encode(png),
+      'max_width_dots': maxWidth,
+      'paper_width_dots': paperWidth,
+      'options': {'align': 1},
+    };
+  }
+
+  Uint8List _buildQrPng(String data, int targetPixels) {
+    QrImage? qrImage;
+    for (final level in const [
+      QrErrorCorrectLevel.H,
+      QrErrorCorrectLevel.Q,
+      QrErrorCorrectLevel.M,
+    ]) {
+      try {
+        qrImage = QrImage(QrCode.fromData(
+          data: data,
+          errorCorrectLevel: level,
+        ));
+        break;
+      } catch (_) {}
+    }
+    if (qrImage == null) {
+      qrImage = QrImage(QrCode.fromData(
+        data: data,
+        errorCorrectLevel: QrErrorCorrectLevel.L,
+      ));
+    }
+
+    const quietModules = 4;
+    final totalModules = qrImage.moduleCount + quietModules * 2;
+    final modulePixels = (targetPixels ~/ totalModules).clamp(3, 12);
+    final imageSize = totalModules * modulePixels;
+    final output = img.Image(imageSize, imageSize);
+    img.fill(output, img.getColor(255, 255, 255));
+    final black = img.getColor(0, 0, 0);
+
+    for (var row = 0; row < qrImage.moduleCount; row++) {
+      for (var col = 0; col < qrImage.moduleCount; col++) {
+        if (!qrImage.isDark(row, col)) continue;
+        final startX = (col + quietModules) * modulePixels;
+        final startY = (row + quietModules) * modulePixels;
+        for (var y = 0; y < modulePixels; y++) {
+          for (var x = 0; x < modulePixels; x++) {
+            output.setPixel(startX + x, startY + y, black);
+          }
+        }
+      }
+    }
+
+    return Uint8List.fromList(img.encodePng(output));
+  }
+
+  Future<void> _printSunmiImage(Map entry, {required int align}) async {
+    try {
+      final bytes = await _loadPrintImageBytes(entry);
+      if (bytes == null || bytes.isEmpty) return;
+      await SunmiPrinter.setAlignment(_toSunmiAlign(align));
+      await SunmiPrinter.printImage(bytes);
+      await SunmiPrinter.lineWrap(1);
+    } catch (e, stackTrace) {
+      kioskLogError(
+        "Sunmi image print skipped source=${_printImageSource(entry)}",
+        tag: "PRINT",
+        error: e,
+        stackTrace: stackTrace,
+      );
+    }
+  }
+
+  String _printImageSource(Map entry) {
+    final url = entry['url']?.toString().trim() ?? '';
+    if (url.isNotEmpty) return url;
+    final base64 = entry['base64']?.toString().trim() ?? '';
+    return base64.isNotEmpty ? 'base64-image' : '';
+  }
+
+  Future<Uint8List?> _loadPrintImageBytes(Map entry) async {
+    var base64 = entry['base64']?.toString().trim() ?? '';
+    if (base64.isNotEmpty) {
+      final dataUriIndex = base64.indexOf('base64,');
+      if (dataUriIndex >= 0) {
+        base64 = base64.substring(dataUriIndex + 'base64,'.length);
+      }
+      return Uint8List.fromList(base64Decode(base64));
+    }
+
+    final url = entry['url']?.toString().trim() ?? '';
+    if (url.isEmpty) return null;
+    return _downloadPrintImage(url);
+  }
+
+  Future<Uint8List?> _downloadPrintImage(String url) async {
+    final cached = _printImageCache[url];
+    if (cached != null) return cached;
+    final res = await Dio().get<List<int>>(
+      url,
+      options: Options(
+        responseType: ResponseType.bytes,
+        followRedirects: true,
+        receiveTimeout: const Duration(seconds: 8),
+        sendTimeout: const Duration(seconds: 4),
+      ),
+    );
+    final data = res.data;
+    if (data == null || data.isEmpty) return null;
+    final bytes = Uint8List.fromList(data);
+    _printImageCache[url] = bytes;
+    return bytes;
+  }
+
   Future<void> _sunmiPrintText(
     String text, {
     required int align,
@@ -1831,7 +3292,14 @@ class PrinterService {
             fontSize: large ? SunmiFontSize.LG : null,
           )
         : null;
-    await SunmiPrinter.printText(text, style: style);
+    await SunmiPrinter.printText(_printerSafeText(text), style: style);
+  }
+
+  String _printerSafeText(String value) {
+    return value
+        .replaceAll('₹', 'Rs ')
+        .replaceAll('₨', 'Rs ')
+        .replaceAll(RegExp(r'Rs\s+'), 'Rs ');
   }
 
   SunmiPrintAlign _toSunmiAlign(int align) {
@@ -1858,11 +3326,7 @@ List<Map<String, dynamic>> _buildReceiptIsolate(
 ) {
   const int width = 32;
   final int? millis = args["orderDate"] as int?;
-  final dt = millis != null
-      ? DateTime.fromMillisecondsSinceEpoch(millis)
-      : DateTime.now();
-  final dateTime = "${dt.year}-${_twoIsolate(dt.month)}-${_twoIsolate(dt.day)} "
-      "${_twoIsolate(dt.hour)}:${_twoIsolate(dt.minute)}";
+  final dateTime = _printDateTime(_receiptWallTimeFromMillis(millis));
 
   final List<Map<String, dynamic>> lines = [];
 
@@ -1882,9 +3346,7 @@ List<Map<String, dynamic>> _buildReceiptIsolate(
 
   String divider() => '-' * width;
 
-  String center(String t) => t.length >= width
-      ? t
-      : t.padLeft((width + t.length) ~/ 2).padRight(width);
+  String center(String t) => t.trim();
 
   String lr(String l, String r) =>
       l.padRight(width - r.length).substring(0, width - r.length) + r;
@@ -1907,8 +3369,7 @@ List<Map<String, dynamic>> _buildReceiptIsolate(
   final List cartItems = args["cartItems"] as List? ?? const [];
   final num tax = (args["taxAmount"] as num?) ?? 0;
   final num discount = (args["discountAmount"] as num?) ?? 0;
-  final List footerLines =
-      args["footerLines"] as List? ?? const ["Thank you for your order!"];
+  final List<String> footerLines = _receiptFooterLines(args["footerLines"]);
   final String? orderTypeRaw = args["orderType"]?.toString();
   final String? receiptModeRaw = args["receiptMode"]?.toString();
   final bool removeTaxLines = args["removeTaxLines"] == true;
@@ -1932,7 +3393,7 @@ List<Map<String, dynamic>> _buildReceiptIsolate(
 
   final String? mode = receiptMode();
   final bool allowCustomerCopy = mode != "counter";
-  final bool allowCounterCopy = mode != "customer";
+  final bool allowCounterCopy = mode == "counter" || mode == "both";
 
   String? orderTypeLabel() {
     if (orderTypeRaw == null || orderTypeRaw!.trim().isEmpty) return null;
@@ -2082,6 +3543,8 @@ List<Map<String, dynamic>> _buildReceiptIsolate(
       for (final f in footerLines) {
         add(center(f.toString()), align: 1);
       }
+      add(center(_poweredBySelfxLabel), align: 1);
+      add(center(_poweredBySelfxBrand), align: 1, bold: true);
     }
   }
 
@@ -2103,10 +3566,7 @@ List<Map<String, dynamic>> _buildSummaryReceiptIsolate(
   Map<String, dynamic> args,
 ) {
   const int width = 32;
-  final now = DateTime.now();
-  final printedAt =
-      "${now.year}-${_twoIsolate(now.month)}-${_twoIsolate(now.day)} "
-      "${_twoIsolate(now.hour)}:${_twoIsolate(now.minute)}";
+  final printedAt = _printDateTime(IndiaTime.now());
 
   final List<Map<String, dynamic>> lines = [];
 
@@ -2185,10 +3645,7 @@ List<Map<String, dynamic>> _buildItemSalesReportIsolate(
   Map<String, dynamic> args,
 ) {
   const int width = 32;
-  final now = DateTime.now();
-  final printedAt =
-      "${now.year}-${_twoIsolate(now.month)}-${_twoIsolate(now.day)} "
-      "${_twoIsolate(now.hour)}:${_twoIsolate(now.minute)}";
+  final printedAt = _printDateTime(IndiaTime.now());
 
   final List<Map<String, dynamic>> lines = [];
 
@@ -2289,10 +3746,7 @@ List<Map<String, dynamic>> _buildCategorySalesReportIsolate(
   Map<String, dynamic> args,
 ) {
   const int width = 32;
-  final now = DateTime.now();
-  final printedAt =
-      "${now.year}-${_twoIsolate(now.month)}-${_twoIsolate(now.day)} "
-      "${_twoIsolate(now.hour)}:${_twoIsolate(now.minute)}";
+  final printedAt = _printDateTime(IndiaTime.now());
 
   final List<Map<String, dynamic>> lines = [];
 
@@ -2312,9 +3766,7 @@ List<Map<String, dynamic>> _buildCategorySalesReportIsolate(
 
   String divider() => '-' * width;
 
-  String center(String t) => t.length >= width
-      ? t
-      : t.padLeft((width + t.length) ~/ 2).padRight(width);
+  String center(String t) => t.trim();
 
   String lr(String l, String r) =>
       l.padRight(width - r.length).substring(0, width - r.length) + r;
@@ -2401,10 +3853,7 @@ List<Map<String, dynamic>> _buildCategoryTotalsReportIsolate(
   Map<String, dynamic> args,
 ) {
   const int width = 32;
-  final now = DateTime.now();
-  final printedAt =
-      "${now.year}-${_twoIsolate(now.month)}-${_twoIsolate(now.day)} "
-      "${_twoIsolate(now.hour)}:${_twoIsolate(now.minute)}";
+  final printedAt = _printDateTime(IndiaTime.now());
 
   final List<Map<String, dynamic>> lines = [];
 
@@ -2590,7 +4039,7 @@ List<Map<String, dynamic>> _buildCategoryDaySummaryReportIsolate(
     return (" " * left) + text + (" " * right);
   }
 
-  String money(num value) => "₹${value.toStringAsFixed(2)}";
+  String money(num value) => "Rs ${value.toStringAsFixed(2)}";
 
   final titleText = (args["restaurantName"] ?? "SELFX").toString().trim();
   if (titleText.length <= width) {
@@ -2648,11 +4097,7 @@ List<Map<String, dynamic>> _buildUsbReceiptIsolate(
 ) {
   const int width = 32;
   final int? millis = args["orderDate"] as int?;
-  final dt = millis != null
-      ? DateTime.fromMillisecondsSinceEpoch(millis)
-      : DateTime.now();
-  final dateTime = "${dt.year}-${_twoIsolate(dt.month)}-${_twoIsolate(dt.day)} "
-      "${_twoIsolate(dt.hour)}:${_twoIsolate(dt.minute)}";
+  final dateTime = _printDateTime(_receiptWallTimeFromMillis(millis));
 
   final List<Map<String, dynamic>> lines = [];
 
@@ -2677,9 +4122,7 @@ List<Map<String, dynamic>> _buildUsbReceiptIsolate(
 
   void dotted() => lines.add({'type': 'dottedLine'});
 
-  String center(String t) => t.length >= width
-      ? t
-      : t.padLeft((width + t.length) ~/ 2).padRight(width);
+  String center(String t) => t.trim();
 
   String lr(String l, String r) =>
       l.padRight(width - r.length).substring(0, width - r.length) + r;
@@ -2702,8 +4145,7 @@ List<Map<String, dynamic>> _buildUsbReceiptIsolate(
   final List cartItems = args["cartItems"] as List? ?? const [];
   final num tax = (args["taxAmount"] as num?) ?? 0;
   final num discount = (args["discountAmount"] as num?) ?? 0;
-  final List footerLines =
-      args["footerLines"] as List? ?? const ["Thank you for your order!"];
+  final List<String> footerLines = _receiptFooterLines(args["footerLines"]);
   final String? orderTypeRaw = args["orderType"]?.toString();
   final String? receiptModeRaw = args["receiptMode"]?.toString();
   final bool removeTaxLines = args["removeTaxLines"] == true;
@@ -2727,7 +4169,7 @@ List<Map<String, dynamic>> _buildUsbReceiptIsolate(
 
   final String? mode = receiptMode();
   final bool allowCustomerCopy = mode != "counter";
-  final bool allowCounterCopy = mode != "customer";
+  final bool allowCounterCopy = mode == "counter" || mode == "both";
 
   String? orderTypeLabel() {
     if (orderTypeRaw == null || orderTypeRaw!.trim().isEmpty) return null;
@@ -2872,6 +4314,8 @@ List<Map<String, dynamic>> _buildUsbReceiptIsolate(
           text(center(f.toString().trim()), align: 1);
         }
       }
+      text(center(_poweredBySelfxLabel), align: 1);
+      text(center(_poweredBySelfxBrand), align: 1, bold: true);
     }
   }
 

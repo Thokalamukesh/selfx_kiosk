@@ -17,7 +17,6 @@ import 'package:api_selfxo_project/widget/app_network_image.dart';
 import 'package:api_selfxo_project/widget/product_card.dart';
 import 'best_selling.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'register_screen.dart';
 
 class SelectionPainter extends CustomPainter {
   @override
@@ -114,9 +113,14 @@ class _HomePage2State extends State<HomePage2> with TickerProviderStateMixin {
   final Map<int, List<Map<String, dynamic>>> modifiersMap = {};
   Rect? _lastCartIconRect;
   List<dynamic> _rawProducts = [];
+  Map<String, List<ProductModel>> _productsByCategory = {};
+  List<String> _sectionCategoriesCache = const [];
   final Map<int, Map<String, dynamic>> _productOverrides = {};
   static const String _overridesKey = "admin_product_overrides";
   static const String _categoryOverridesKey = "admin_category_overrides";
+  static const String _menuCacheKey = "kiosk_menu_products_cache_v1";
+  static const String _restaurantClosedMessage =
+      "Restaurant closed. Please check back later.";
   final Map<int, Map<String, dynamic>> _categoryOverrides = {};
 
   String? _extractBackendErrorMessage(Object error) {
@@ -143,25 +147,30 @@ class _HomePage2State extends State<HomePage2> with TickerProviderStateMixin {
         error.type == DioExceptionType.sendTimeout;
   }
 
+  bool _isClosedMenuMessage(String? message) {
+    if (message == null) return false;
+    final text = message.toLowerCase();
+    return text.contains("restaurant closed") ||
+        text.contains("store closed") ||
+        text.contains("kitchen closed") ||
+        text.contains("outside business") ||
+        text.contains("outside opening") ||
+        text.contains("not accepting") ||
+        text.contains("not available") ||
+        text.contains("unavailable") ||
+        text.contains("no item") ||
+        text.contains("no menu") ||
+        text.contains("time up") ||
+        text.contains("closed now");
+  }
+
+  String _menuErrorMessage(String? backendMessage) {
+    return _isClosedMenuMessage(backendMessage)
+        ? _restaurantClosedMessage
+        : (backendMessage ?? "Failed to load products");
+  }
+
   Future<void> _goToWelcome(BuildContext context) async {
-    if (kIsWeb) {
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.remove("restaurant_id");
-      await prefs.remove("restaurant_name");
-      await prefs.remove("auth_token");
-      await prefs.remove("admin_token");
-      await prefs.remove("device_uuid");
-      await prefs.remove("device_id");
-      await prefs.setBool("kiosk_setup_done", false);
-
-      if (!mounted) return;
-      Navigator.of(this.context).pushAndRemoveUntil(
-        MaterialPageRoute(builder: (_) => const UserIdScreen()),
-        (route) => false,
-      );
-      return;
-    }
-
     if (!mounted) return;
     Navigator.of(context).pushAndRemoveUntil(
       MaterialPageRoute(builder: (_) => const WelcomeScreen()),
@@ -188,6 +197,7 @@ class _HomePage2State extends State<HomePage2> with TickerProviderStateMixin {
   bool _showProductScrollHint = false;
   late AnimationController _leftScrollHintController;
   Timer? _categorySyncTimer;
+  Timer? _imagePrecacheTimer;
   final Map<String, BuildContext> _leftCategoryContexts = {};
   final Map<String, BuildContext> _rightCategoryContexts = {};
   VoidCallback? _categoryScrollListener;
@@ -217,7 +227,7 @@ class _HomePage2State extends State<HomePage2> with TickerProviderStateMixin {
         _pendingMenuReload = true;
         return;
       }
-      _loadProducts();
+      _loadProducts(forceRefresh: true);
     };
     MenuSync.revision.addListener(_menuSyncListener!);
 
@@ -355,6 +365,7 @@ class _HomePage2State extends State<HomePage2> with TickerProviderStateMixin {
     }
     _retryTimer?.cancel();
     _categorySyncTimer?.cancel();
+    _imagePrecacheTimer?.cancel();
     if (_menuSyncListener != null) {
       MenuSync.revision.removeListener(_menuSyncListener!);
     }
@@ -365,6 +376,7 @@ class _HomePage2State extends State<HomePage2> with TickerProviderStateMixin {
   void deactivate() {
     _retryTimer?.cancel();
     _categorySyncTimer?.cancel();
+    _imagePrecacheTimer?.cancel();
     if (_cartBounceController.isAnimating) {
       _cartBounceController.stop(canceled: true);
     }
@@ -416,134 +428,33 @@ class _HomePage2State extends State<HomePage2> with TickerProviderStateMixin {
     }
   }
 
-  Future<void> _loadProducts() async {
+  Future<void> _loadProducts({bool forceRefresh = false}) async {
     if (_loadingProducts) return;
     _loadingProducts = true;
     _retryTimer?.cancel();
+    final hadProducts = allProducts.isNotEmpty;
     if (mounted) {
       setState(() {
-        isLoading = true;
+        isLoading = !hadProducts;
         hasError = false;
       });
     }
     try {
       await _loadProductOverrides();
       await _loadCategoryOverrides();
-      final res = await KioskApi().getProducts();
+
+      if (!hadProducts) {
+        final cachedRaw = await _readCachedMenuProducts();
+        if (cachedRaw != null && cachedRaw.isNotEmpty) {
+          await _applyRawProducts(cachedRaw, fromCache: true);
+        }
+      }
+
+      final res = await KioskApi().getProducts(forceRefresh: forceRefresh);
 
       final List raw = _cloneRawProducts(res.data["products"] ?? []);
-      _applyOverridesToRawProducts(raw);
-      _rawProducts = raw;
-      widget.onProductsLoaded(raw);
-
-      final parsed = await compute(_parseProductsIsolate, raw);
-      if (!mounted) return;
-
-      final productMaps = List<Map<String, dynamic>>.from(
-        parsed["products"] ?? const [],
-      );
-      final hiddenCategoryKeys = _hiddenCategoryKeys();
-      _applyOverridesToProductMaps(
-        productMaps,
-        hiddenCategoryKeys: hiddenCategoryKeys,
-      );
-      final tempProducts = productMaps
-          .map(
-            (p) => ProductModel(
-              id: p["id"],
-              name: p["name"] ?? "",
-              category: p["category"] ?? "",
-              price: int.tryParse(p["price"].toString()) ?? 0,
-              image: normalizeImageUrlValue(p["image"]),
-              type: p["type"],
-            ),
-          )
-          .toList();
-
-      final tempCategories = List<String>.from(
-        parsed["categories"] ?? const <String>[],
-      ).where(_isVisibleCategoryName).toList();
-      if (_productOverrides.isNotEmpty) {
-        final overrideCats = _productOverrides.values
-            .map((o) => _categoryLabel(o["category_name"] ?? o["category"]))
-            .where((o) => o.trim().isNotEmpty)
-            .where(_isVisibleCategoryName)
-            .where((o) => !hiddenCategoryKeys.contains(_categoryKey(o)))
-            .toSet();
-        for (final c in overrideCats) {
-          if (!tempCategories.contains(c)) {
-            tempCategories.add(c);
-          }
-        }
-      }
-      if (tempCategories.isEmpty || tempCategories.first != "All") {
-        tempCategories.insert(0, "All");
-      }
-
-      final tempCatImages = Map<String, String>.from(
-        parsed["categoryImages"] ?? const <String, String>{},
-      ).map(
-        (key, value) => MapEntry(key, normalizeImageUrl(value)),
-      );
-
-      variationsMap
-        ..clear()
-        ..addAll(
-          (parsed["variationsMap"] as Map? ?? const {}).map(
-            (k, v) => MapEntry(
-              int.tryParse(k.toString()) ?? 0,
-              List<Map<String, dynamic>>.from(v ?? const []),
-            ),
-          )..removeWhere((key, value) => key == 0),
-        );
-
-      modifiersMap
-        ..clear()
-        ..addAll(
-          (parsed["modifiersMap"] as Map? ?? const {}).map(
-            (k, v) => MapEntry(
-              int.tryParse(k.toString()) ?? 0,
-              List<Map<String, dynamic>>.from(v ?? const []),
-            ),
-          )..removeWhere((key, value) => key == 0),
-        );
-
-      // 2. Update UI with data
-      if (!mounted) return;
-      setState(() {
-        allProducts = tempProducts;
-        categories = tempCategories;
-        categoryImages = tempCatImages;
-        _leftCategoryContexts.clear();
-        _rightCategoryContexts.clear();
-        isLoading = false;
-        hasError = false;
-        if (selectedIndex >= categories.length) {
-          selectedIndex = 0;
-        }
-        if (_activeCategoryIndex >= categories.length) {
-          _activeCategoryIndex = 0;
-        }
-      });
-
-      // 3. 🔥 THE KEY UPDATE: Check for scrollability AFTER rendering
-      // We use a post-frame callback to let Flutter finish building the list
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (!mounted) return;
-        setState(() {
-          // Check Left Category Bar
-          if (_categoryScrollController.hasClients) {
-            _showScrollArrow =
-                _categoryScrollController.position.maxScrollExtent > 0;
-          }
-          // Check Right Product Area
-          if (scrollCtrl.hasClients) {
-            _showProductScrollHint = scrollCtrl.position.maxScrollExtent > 0 &&
-                scrollCtrl.position.pixels <= 4;
-          }
-        });
-        _precacheProductImages();
-      });
+      await _writeCachedMenuProducts(raw);
+      await _applyRawProducts(raw);
     } catch (e) {
       final online = ConnectivityService.instance.isOnline.value;
       final hasCachedData = allProducts.isNotEmpty;
@@ -554,7 +465,7 @@ class _HomePage2State extends State<HomePage2> with TickerProviderStateMixin {
 
       if (online && !isNetworkIssue && backendMessage != null) {
         setState(() {
-          errorMessage = backendMessage;
+          errorMessage = _menuErrorMessage(backendMessage);
           hasError = !hasCachedData;
           isLoading = false;
         });
@@ -584,11 +495,187 @@ class _HomePage2State extends State<HomePage2> with TickerProviderStateMixin {
     }
   }
 
+  Future<List?> _readCachedMenuProducts() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final raw = prefs.getString(_menuCacheKey);
+      if (raw == null || raw.isEmpty) return null;
+      final decoded = jsonDecode(raw);
+      if (decoded is! List) return null;
+      return _cloneRawProducts(decoded);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<void> _writeCachedMenuProducts(List raw) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(_menuCacheKey, jsonEncode(raw));
+    } catch (_) {}
+  }
+
+  Future<void> _applyRawProducts(
+    List rawProducts, {
+    bool fromCache = false,
+  }) async {
+    final raw = _cloneRawProducts(rawProducts);
+    _applyOverridesToRawProducts(raw);
+    _rawProducts = raw;
+    widget.onProductsLoaded(raw);
+
+    final parsed = await compute(_parseProductsIsolate, raw);
+    if (!mounted) return;
+
+    final productMaps = List<Map<String, dynamic>>.from(
+      parsed["products"] ?? const [],
+    );
+    final hiddenCategoryKeys = _hiddenCategoryKeys();
+    _applyOverridesToProductMaps(
+      productMaps,
+      hiddenCategoryKeys: hiddenCategoryKeys,
+    );
+    final tempProducts = productMaps
+        .map(
+          (p) => ProductModel(
+            id: p["id"],
+            name: p["name"] ?? "",
+            category: p["category"] ?? "",
+            price: int.tryParse(p["price"].toString()) ?? 0,
+            image: normalizeImageUrlValue(p["image"]),
+            description: p["description"]?.toString() ?? "",
+            type: p["type"],
+          ),
+        )
+        .toList();
+
+    if (tempProducts.isEmpty) {
+      if (!mounted) return;
+      setState(() {
+        allProducts = const [];
+        categories = const [];
+        categoryImages = const {};
+        _productsByCategory = {};
+        _sectionCategoriesCache = const [];
+        variationsMap.clear();
+        modifiersMap.clear();
+        _leftCategoryContexts.clear();
+        _rightCategoryContexts.clear();
+        errorMessage = _restaurantClosedMessage;
+        hasError = true;
+        isLoading = false;
+        selectedIndex = 0;
+        _activeCategoryIndex = 0;
+      });
+      return;
+    }
+
+    final tempCategories = List<String>.from(
+      parsed["categories"] ?? const <String>[],
+    ).where(_isVisibleCategoryName).toList();
+    if (_productOverrides.isNotEmpty) {
+      final overrideCats = _productOverrides.values
+          .map((o) => _categoryLabel(o["category_name"] ?? o["category"]))
+          .where((o) => o.trim().isNotEmpty)
+          .where(_isVisibleCategoryName)
+          .where((o) => !hiddenCategoryKeys.contains(_categoryKey(o)))
+          .toSet();
+      for (final c in overrideCats) {
+        if (!tempCategories.contains(c)) {
+          tempCategories.add(c);
+        }
+      }
+    }
+    if (tempCategories.isEmpty || tempCategories.first != "All") {
+      tempCategories.insert(0, "All");
+    }
+
+    final tempSectionCategories =
+        tempCategories.where((c) => c != "All").toList(growable: false);
+    final tempProductsByCategory = <String, List<ProductModel>>{};
+    for (final product in tempProducts) {
+      (tempProductsByCategory[product.category] ??= <ProductModel>[])
+          .add(product);
+    }
+
+    final tempCatImages = Map<String, String>.from(
+      parsed["categoryImages"] ?? const <String, String>{},
+    ).map(
+      (key, value) => MapEntry(key, normalizeImageUrl(value)),
+    );
+
+    variationsMap
+      ..clear()
+      ..addAll(
+        (parsed["variationsMap"] as Map? ?? const {}).map(
+          (k, v) => MapEntry(
+            int.tryParse(k.toString()) ?? 0,
+            List<Map<String, dynamic>>.from(v ?? const []),
+          ),
+        )..removeWhere((key, value) => key == 0),
+      );
+
+    modifiersMap
+      ..clear()
+      ..addAll(
+        (parsed["modifiersMap"] as Map? ?? const {}).map(
+          (k, v) => MapEntry(
+            int.tryParse(k.toString()) ?? 0,
+            List<Map<String, dynamic>>.from(v ?? const []),
+          ),
+        )..removeWhere((key, value) => key == 0),
+      );
+
+    if (!mounted) return;
+    setState(() {
+      allProducts = tempProducts;
+      categories = tempCategories;
+      _sectionCategoriesCache = tempSectionCategories;
+      _productsByCategory = tempProductsByCategory;
+      categoryImages = tempCatImages;
+      _leftCategoryContexts.clear();
+      _rightCategoryContexts.clear();
+      isLoading = false;
+      hasError = false;
+      if (selectedIndex >= categories.length) {
+        selectedIndex = 0;
+      }
+      if (_activeCategoryIndex >= categories.length) {
+        _activeCategoryIndex = 0;
+      }
+    });
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      setState(() {
+        if (_categoryScrollController.hasClients) {
+          _showScrollArrow =
+              _categoryScrollController.position.maxScrollExtent > 0;
+        }
+        if (scrollCtrl.hasClients) {
+          _showProductScrollHint = scrollCtrl.position.maxScrollExtent > 0 &&
+              scrollCtrl.position.pixels <= 4;
+        }
+      });
+      if (!fromCache) {
+        _scheduleProductImagePrecache();
+      }
+    });
+  }
+
+  void _scheduleProductImagePrecache() {
+    _imagePrecacheTimer?.cancel();
+    _imagePrecacheTimer = Timer(const Duration(milliseconds: 700), () {
+      if (!mounted) return;
+      _precacheProductImages();
+    });
+  }
+
   void _precacheProductImages() {
     if (!mounted) return;
     if (kIsWeb) return;
     final context = this.context;
-    final int maxItems = 24;
+    const int maxItems = 24;
     final productsToCache = allProducts.take(maxItems);
     for (final p in productsToCache) {
       final url = p.image.trim();
@@ -656,7 +743,6 @@ class _HomePage2State extends State<HomePage2> with TickerProviderStateMixin {
       final render = ctx.findRenderObject();
       if (render == null || !render.attached) continue;
       final viewport = RenderAbstractViewport.of(render);
-      if (viewport == null) continue;
 
       final offset = viewport.getOffsetToReveal(render, 0).offset;
       firstOffset ??= offset;
@@ -667,7 +753,7 @@ class _HomePage2State extends State<HomePage2> with TickerProviderStateMixin {
       }
     }
 
-    if (firstOffset != null && currentOffset < (firstOffset! - 8)) {
+    if (firstOffset != null && currentOffset < (firstOffset - 8)) {
       bestIndex = 0;
     }
 
@@ -735,9 +821,8 @@ class _HomePage2State extends State<HomePage2> with TickerProviderStateMixin {
         ..clear()
         ..addAll(
           decoded.map((k, v) {
-            final override = v is Map
-                ? Map<String, dynamic>.from(v as Map)
-                : <String, dynamic>{};
+            final override =
+                v is Map ? Map<String, dynamic>.from(v) : <String, dynamic>{};
             final normalizedCategory = _categoryLabel(
               override["category_name"] ?? override["category"],
               fallback: "",
@@ -769,9 +854,7 @@ class _HomePage2State extends State<HomePage2> with TickerProviderStateMixin {
           decoded.map(
             (k, v) => MapEntry(
               int.tryParse(k.toString()) ?? 0,
-              v is Map
-                  ? Map<String, dynamic>.from(v as Map)
-                  : <String, dynamic>{},
+              v is Map ? Map<String, dynamic>.from(v) : <String, dynamic>{},
             ),
           )..removeWhere((key, value) => key == 0),
         );
@@ -874,9 +957,6 @@ class _HomePage2State extends State<HomePage2> with TickerProviderStateMixin {
         for (final item in items) {
           if (item is! Map) continue;
           final itemMap = Map<String, dynamic>.from(item);
-          final nested = itemMap["item"];
-          final nestedMap =
-              nested is Map ? Map<String, dynamic>.from(nested) : null;
           final itemId = _resolveItemId(itemMap);
           if (itemId == 0) continue;
           final override = _productOverrides[itemId];
@@ -985,6 +1065,14 @@ class _HomePage2State extends State<HomePage2> with TickerProviderStateMixin {
       if (image != null && image.toString().trim().isNotEmpty) {
         p["image"] = normalizeImageUrlValue(image);
       }
+      final description = override["description"] ??
+          override["item_description"] ??
+          override["itemDescription"] ??
+          override["short_description"] ??
+          override["shortDescription"];
+      if (description != null) {
+        p["description"] = description.toString();
+      }
     }
 
     productMaps.removeWhere(
@@ -1012,32 +1100,66 @@ class _HomePage2State extends State<HomePage2> with TickerProviderStateMixin {
         "category": categoryName,
         "price": price,
         "image": normalizeImageUrlValue(o["item_photo_url"] ?? o["image"]),
+        "description": (o["description"] ??
+                o["item_description"] ??
+                o["itemDescription"] ??
+                o["short_description"] ??
+                o["shortDescription"] ??
+                "")
+            .toString(),
         "type": o["type"],
       });
     }
   }
 
   List<String> _sectionCategories() {
-    return categories.where((c) => c != "All").toList();
+    return _sectionCategoriesCache;
   }
 
   List<ProductModel> _filterProductsForCategory(String? category) {
-    return allProducts.where((p) {
-      final matchesCategory = category == null || p.category == category;
-      if (!matchesCategory) return false;
-      if (searchQuery.isEmpty) return true;
-      return p.name.toLowerCase().contains(searchQuery);
-    }).toList();
+    final base = category == null
+        ? allProducts
+        : (_productsByCategory[category] ?? const <ProductModel>[]);
+    if (searchQuery.isEmpty) return base;
+    return base
+        .where((p) => p.name.toLowerCase().contains(searchQuery))
+        .toList(growable: false);
   }
 
   bool _debugIsTruthy(dynamic value) {
     if (value == null) return false;
     if (value is bool) return value;
-    if (value is num) return value == 1 || value == 1.0;
+    if (value is num) return value != 0;
     final s = value.toString().toLowerCase().trim();
-    if (s == "1" || s == "true" || s == "yes" || s == "y") return true;
+    if (s == "0" ||
+        s == "false" ||
+        s == "no" ||
+        s == "n" ||
+        s == "off" ||
+        s == "inactive" ||
+        s == "disabled" ||
+        s == "hidden" ||
+        s == "unavailable" ||
+        s == "not_available" ||
+        s == "not available" ||
+        s == "out_of_stock" ||
+        s == "out of stock") {
+      return false;
+    }
+    if (s == "1" ||
+        s == "true" ||
+        s == "yes" ||
+        s == "y" ||
+        s == "on" ||
+        s == "active" ||
+        s == "enabled" ||
+        s == "available" ||
+        s == "in_stock" ||
+        s == "in stock") {
+      return true;
+    }
     final parsed = num.tryParse(s);
-    return parsed == 1 || parsed == 1.0;
+    return parsed != null && parsed != 0;
   }
 
   bool _isProductEntryAvailable(
@@ -1052,9 +1174,17 @@ class _HomePage2State extends State<HomePage2> with TickerProviderStateMixin {
         item?["is_available"] ??
         item?["isAvailable"] ??
         item?["available"] ??
+        item?["enabled"] ??
+        item?["status"] ??
+        item?["item_status"] ??
+        item?["itemStatus"] ??
         nestedMap?["is_available"] ??
         nestedMap?["isAvailable"] ??
-        nestedMap?["available"];
+        nestedMap?["available"] ??
+        nestedMap?["enabled"] ??
+        nestedMap?["status"] ??
+        nestedMap?["item_status"] ??
+        nestedMap?["itemStatus"];
     return raw == null || _debugIsTruthy(raw);
   }
 
@@ -1218,6 +1348,8 @@ class _HomePage2State extends State<HomePage2> with TickerProviderStateMixin {
       );
     }
     if (hasError) {
+      final bool restaurantClosed = errorMessage == _restaurantClosedMessage ||
+          _isClosedMenuMessage(errorMessage);
       return Scaffold(
         backgroundColor: const Color(0xFFF7F7F7),
         body: Center(
@@ -1248,17 +1380,21 @@ class _HomePage2State extends State<HomePage2> with TickerProviderStateMixin {
                         color: Color(0xFFFFF1EE),
                         shape: BoxShape.circle,
                       ),
-                      child: const Icon(
-                        Icons.error_outline_rounded,
+                      child: Icon(
+                        restaurantClosed
+                            ? Icons.storefront_rounded
+                            : Icons.error_outline_rounded,
                         size: 38,
-                        color: Color(0xFF9F342C),
+                        color: const Color(0xFF9F342C),
                       ),
                     ),
                     const SizedBox(height: 16),
-                    const Text(
-                      "Unable to load menu",
+                    Text(
+                      restaurantClosed
+                          ? "Restaurant Closed"
+                          : "Unable to load menu",
                       textAlign: TextAlign.center,
-                      style: TextStyle(
+                      style: const TextStyle(
                         fontSize: 22,
                         fontWeight: FontWeight.w800,
                       ),
@@ -1645,7 +1781,7 @@ class _HomePage2State extends State<HomePage2> with TickerProviderStateMixin {
     final bool sectionMode = selectedIndex == 0;
     final double leftBarWidth = isTablet ? 170 : 100;
     final double rightAreaWidth = (width - leftBarWidth).clamp(320.0, width);
-    final double gridPadding = 24; // SliverPadding left + right
+    const double gridPadding = 24; // SliverPadding left + right
     final double crossAxisSpacing = isTablet ? 17 : 12;
     final double gridWidth = (rightAreaWidth - gridPadding).clamp(200.0, width);
     final double itemWidth =
@@ -1705,6 +1841,7 @@ class _HomePage2State extends State<HomePage2> with TickerProviderStateMixin {
                                     category: p.category,
                                     price: p.price,
                                     imagePath: p.image,
+                                    description: p.description,
                                     isVeg: p.isVeg,
                                     qty: widget.getQtyForProduct(p.id),
                                     onAddToCart: widget.onAddToCart,
@@ -1801,6 +1938,7 @@ class _HomePage2State extends State<HomePage2> with TickerProviderStateMixin {
                 category: p.category,
                 price: p.price,
                 imagePath: p.image,
+                description: p.description,
                 isVeg: p.isVeg,
                 qty: widget.getQtyForProduct(p.id),
                 onAddToCart: widget.onAddToCart,
@@ -1852,7 +1990,7 @@ class _HomePage2State extends State<HomePage2> with TickerProviderStateMixin {
     final int totalPrice = _totalPrice();
 
     const Color accentOrange = Color(0xFF9F342C);
-    final Color cartGreen = const Color.fromARGB(255, 65, 159, 44);
+    const Color cartGreen = Color.fromARGB(255, 65, 159, 44);
 
     return SizedBox(
       height: baseHeight + bottomInset,
@@ -2178,6 +2316,7 @@ class _HomePage2State extends State<HomePage2> with TickerProviderStateMixin {
     );
   }
 
+  // ignore: unused_element
   Widget _buildNoNetworkIndicator() {
     return Material(
       color: Colors.transparent,
@@ -2600,11 +2739,15 @@ Map<String, dynamic> _parseProductsIsolate(List<dynamic> raw) {
     );
     final String catImage = category["item_photo_url"]?.toString() ??
         category["category_image"]?.toString() ??
+        category["category_image_url"]?.toString() ??
+        category["image_url"]?.toString() ??
         category["image"]?.toString() ??
+        category["photo_url"]?.toString() ??
         "";
+    final String normalizedCatImage = normalizeImageUrl(catImage);
 
     if (catName.isNotEmpty && catImage.isNotEmpty) {
-      categoryImages[catName] = normalizeImageUrl(catImage);
+      categoryImages[catName] = normalizedCatImage;
     }
 
     final items = category["items"];
@@ -2618,9 +2761,17 @@ Map<String, dynamic> _parseProductsIsolate(List<dynamic> raw) {
       final rawAvailability = item["is_available"] ??
           item["isAvailable"] ??
           item["available"] ??
+          item["enabled"] ??
+          item["status"] ??
+          item["item_status"] ??
+          item["itemStatus"] ??
           nestedMap?["is_available"] ??
           nestedMap?["isAvailable"] ??
-          nestedMap?["available"];
+          nestedMap?["available"] ??
+          nestedMap?["enabled"] ??
+          nestedMap?["status"] ??
+          nestedMap?["item_status"] ??
+          nestedMap?["itemStatus"];
       if (!(truthyStatus(rawAvailability) ?? true)) continue;
 
       final int itemId = resolveItemId(item);
@@ -2692,17 +2843,44 @@ Map<String, dynamic> _parseProductsIsolate(List<dynamic> raw) {
       }
 
       String pickImage() {
-        final direct = item["item_photo_url"] ?? item["image"];
+        final direct = item["item_photo_url"] ??
+            item["image_url"] ??
+            item["image"] ??
+            item["photo_url"];
         if (direct != null && direct.toString().trim().isNotEmpty) {
           return normalizeImageUrlValue(direct);
         }
-        final nestedImage = nestedMap?["item_photo_url"] ?? nestedMap?["image"];
-        return normalizeImageUrlValue(nestedImage);
+        final nestedImage = nestedMap?["item_photo_url"] ??
+            nestedMap?["image_url"] ??
+            nestedMap?["image"] ??
+            nestedMap?["photo_url"];
+        final normalizedNestedImage = normalizeImageUrlValue(nestedImage);
+        return normalizedNestedImage.isNotEmpty
+            ? normalizedNestedImage
+            : normalizedCatImage;
+      }
+
+      String pickDescription() {
+        final direct = item["description"] ??
+            item["item_description"] ??
+            item["itemDescription"] ??
+            item["short_description"] ??
+            item["shortDescription"];
+        if (direct != null && direct.toString().trim().isNotEmpty) {
+          return direct.toString();
+        }
+        final nestedDescription = nestedMap?["description"] ??
+            nestedMap?["item_description"] ??
+            nestedMap?["itemDescription"] ??
+            nestedMap?["short_description"] ??
+            nestedMap?["shortDescription"];
+        return nestedDescription?.toString() ?? "";
       }
 
       final String name = pickName();
       final dynamic price = pickPrice();
       final String image = pickImage();
+      final String description = pickDescription();
 
       products.add({
         "id": itemId,
@@ -2710,6 +2888,7 @@ Map<String, dynamic> _parseProductsIsolate(List<dynamic> raw) {
         "category": catName,
         "price": price,
         "image": image,
+        "description": description,
         "type": ProductModel.normalizeType(rawType),
       });
 

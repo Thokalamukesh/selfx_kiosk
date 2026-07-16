@@ -11,6 +11,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.app.KeyguardManager
 import android.hardware.usb.UsbDevice
 import android.hardware.usb.UsbManager
 import android.os.PowerManager
@@ -77,7 +78,7 @@ class MainActivity : FlutterActivity() {
         }
 
         enableFullscreen()
-        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        keepKioskAwakeAndVisible()
     }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
@@ -299,6 +300,7 @@ class MainActivity : FlutterActivity() {
 
     override fun onResume() {
         super.onResume()
+        keepKioskAwakeAndVisible()
         enableFullscreen()
     }
 
@@ -326,6 +328,25 @@ class MainActivity : FlutterActivity() {
                 WindowManager.LayoutParams.FLAG_FULLSCREEN,
                 WindowManager.LayoutParams.FLAG_FULLSCREEN
             )
+        }
+    }
+
+    private fun keepKioskAwakeAndVisible() {
+        window.addFlags(
+            WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON or
+                WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON or
+                WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
+                WindowManager.LayoutParams.FLAG_DISMISS_KEYGUARD
+        )
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+            setTurnScreenOn(true)
+            setShowWhenLocked(true)
+            try {
+                val keyguardManager =
+                    getSystemService(Context.KEYGUARD_SERVICE) as KeyguardManager
+                keyguardManager.requestDismissKeyguard(this, null)
+            } catch (_: Exception) {}
         }
     }
 

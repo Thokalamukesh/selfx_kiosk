@@ -35,19 +35,25 @@ class _DashboardTabState extends State<DashboardTab> {
   final TextEditingController _searchController = TextEditingController();
   String _currentSearch = "";
   bool _isBulkPrinting = false;
+  final Set<int> _printingOrderIds = <int>{};
   bool _loadingInFlight = false;
   bool _pendingInfoRefresh = false;
   final PrinterService _printerService = PrinterService();
   late final VoidCallback _infoListener;
 
   int _getOrderPk(Map<String, dynamic> order) {
-    final raw = order["order_pk"] ?? order["order_id"] ?? order["id"] ?? "";
-    return int.tryParse(raw.toString()) ?? 0;
+    for (final key in const ["order_pk", "id", "orderId", "order_id"]) {
+      final parsed = int.tryParse((order[key] ?? "").toString().trim());
+      if (parsed != null && parsed > 0) return parsed;
+    }
+    return 0;
   }
 
   String _getOrderNumber(Map<String, dynamic> order) {
-    final raw = order["order_id"] ??
-        order["order_number"] ??
+    final raw = order["order_number"] ??
+        order["order_no"] ??
+        order["invoice_number"] ??
+        order["order_id"] ??
         order["order_pk"] ??
         "N/A";
     return raw.toString();
@@ -846,168 +852,6 @@ class _DashboardTabState extends State<DashboardTab> {
     await _printCategorySummaryReport();
   }
 
-  Future<void> _printCategorySummaryForDate() async {
-    if (_isBulkPrinting) return;
-    final picked = await showDatePicker(
-      context: context,
-      firstDate: DateTime(2023),
-      lastDate: DateTime.now(),
-      builder: (context, child) {
-        return Theme(
-          data: Theme.of(context).copyWith(
-            colorScheme: const ColorScheme.light(primary: Color(0xFF9F342C)),
-          ),
-          child: child!,
-        );
-      },
-    );
-    if (picked == null) return;
-
-    _isBulkPrinting = true;
-
-    bool dialogOpen = true;
-    showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (ctx) {
-        return AlertDialog(
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(20),
-          ),
-          title: const Text("Preparing Category Summary..."),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const SizedBox(height: 8),
-              const CircularProgressIndicator(color: Color(0xFF9F342C)),
-              const SizedBox(height: 16),
-              Text(
-                DateFormat('dd MMM yyyy').format(picked),
-                style: const TextStyle(fontWeight: FontWeight.w600),
-              ),
-            ],
-          ),
-        );
-      },
-    ).then((_) => dialogOpen = false);
-
-    try {
-      final apiSummary = await _fetchCategorySummaryFromApi(picked);
-      if (apiSummary != null &&
-          (apiSummary.categoryTotals.isNotEmpty ||
-              apiSummary.itemsByCategory.isNotEmpty)) {
-        final dateKey = _formatDateKey(picked);
-        final title = DateFormat('dd MMM yyyy').format(picked);
-        final restaurantName = await _resolveRestaurantName();
-        final address =
-            info["address"] != null ? info["address"].toString() : null;
-        final taxId = info["tax_id"]?.toString();
-
-        await _printerService.printCategoryTotalsReport(
-          title: title,
-          fromDate: dateKey,
-          toDate: dateKey,
-          categoryTotals: apiSummary.categoryTotals,
-          itemsByCategory: apiSummary.itemsByCategory,
-          totalItems: apiSummary.totalItems,
-          totalAmount: apiSummary.totalAmount,
-          restaurantName:
-              restaurantName.isNotEmpty ? restaurantName : "Restaurant",
-          address: address,
-          taxId: taxId,
-        );
-        _showSnackBar("Category summary printed", Colors.green);
-        return;
-      }
-
-      final ordersForDate = await OrderUtils.getOrdersForDate(picked);
-      final paidOrders = ordersForDate.where(_isPaidOrder).toList();
-      if (paidOrders.isEmpty) {
-        _showSnackBar("No paid orders for selected date", Colors.orange);
-        return;
-      }
-
-      final Map<String, Map<String, dynamic>> categoryTotals = {};
-      final Map<String, Map<String, Map<String, dynamic>>> categoryItemMap = {};
-      num totalAmount = 0;
-      int totalItems = 0;
-
-      for (final o in paidOrders) {
-        final items = await _loadOrderItems(o);
-        if (items.isEmpty) continue;
-        for (final item in items) {
-          final String category =
-              (item["category"]?.toString().trim().isNotEmpty ?? false)
-                  ? item["category"].toString()
-                  : "Uncategorized";
-          final String name = item["name"]?.toString() ?? "Item";
-          final int qty = (item["qty"] as num?)?.toInt() ?? 0;
-          final num price = item["price"] is num ? item["price"] as num : 0;
-          final num total = price * qty;
-
-          categoryTotals.putIfAbsent(
-            category,
-            () => {"category": category, "qty": 0, "total": 0},
-          );
-          categoryTotals[category]!["qty"] =
-              (categoryTotals[category]!["qty"] as int) + qty;
-          categoryTotals[category]!["total"] =
-              (categoryTotals[category]!["total"] as num) + total;
-
-          categoryItemMap.putIfAbsent(category, () => {});
-          categoryItemMap[category]!.putIfAbsent(
-            name,
-            () => {"name": name, "qty": 0, "total": 0},
-          );
-          categoryItemMap[category]![name]!["qty"] =
-              (categoryItemMap[category]![name]!["qty"] as int) + qty;
-          categoryItemMap[category]![name]!["total"] =
-              (categoryItemMap[category]![name]!["total"] as num) + total;
-
-          totalItems += qty;
-          totalAmount += total;
-        }
-      }
-
-      if (categoryTotals.isEmpty) {
-        _showSnackBar("No item data to print", Colors.red);
-        return;
-      }
-
-      final Map<String, List<Map<String, dynamic>>> itemsByCategory = {};
-      for (final entry in categoryItemMap.entries) {
-        itemsByCategory[entry.key] = entry.value.values.toList();
-      }
-
-      final dateKey = _formatDateKey(picked);
-      final title = DateFormat('dd MMM yyyy').format(picked);
-      final restaurantName = await _resolveRestaurantName();
-      final address =
-          info["address"] != null ? info["address"].toString() : null;
-      final taxId = info["tax_id"]?.toString();
-
-      await _printerService.printCategoryTotalsReport(
-        title: title,
-        fromDate: dateKey,
-        toDate: dateKey,
-        categoryTotals: categoryTotals.values.toList(),
-        itemsByCategory: itemsByCategory,
-        totalItems: totalItems,
-        totalAmount: totalAmount,
-        restaurantName:
-            restaurantName.isNotEmpty ? restaurantName : "Restaurant",
-        address: address,
-        taxId: taxId,
-      );
-      _showSnackBar("Category summary printed", Colors.green);
-    } catch (e) {
-      _showSnackBar("Print failed: $e", Colors.red);
-    } finally {
-      if (dialogOpen && mounted) Navigator.pop(context);
-      _isBulkPrinting = false;
-    }
-  }
-
   Future<void> _printCategoryTotalsForFilter(
     String nextFilter, {
     DateTimeRange? range,
@@ -1036,51 +880,6 @@ class _DashboardTabState extends State<DashboardTab> {
     Navigator.of(context, rootNavigator: true).pushAndRemoveUntil(
       MaterialPageRoute(builder: (_) => const WelcomeScreen()),
       (_) => false,
-    );
-  }
-
-  Future<void> _openPrintMenu() async {
-    await showModalBottomSheet(
-      context: context,
-      backgroundColor: Colors.white,
-      elevation: 10,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
-      ),
-      builder: (context) {
-        return Padding(
-          padding: const EdgeInsets.fromLTRB(20, 12, 20, 24),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Container(
-                width: 40,
-                height: 5,
-                decoration: BoxDecoration(
-                  color: Colors.grey.shade300,
-                  borderRadius: BorderRadius.circular(10),
-                ),
-              ),
-              const SizedBox(height: 16),
-              const Text(
-                "Print Reports",
-                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-              ),
-              const SizedBox(height: 16),
-              _buildPrintCard(
-                icon: Icons.list_alt_rounded,
-                color: Colors.purple,
-                title: "Category Summary",
-                subtitle: "Categories with items, price & total for a day",
-                onTap: () {
-                  Navigator.pop(context);
-                  _printCategorySummaryForDate();
-                },
-              ),
-            ],
-          ),
-        );
-      },
     );
   }
 
@@ -1159,7 +958,10 @@ class _DashboardTabState extends State<DashboardTab> {
                             ),
                             onTap: () async {
                               Navigator.pop(context);
-                              await _printOrderById(orderPk);
+                              await _printSingleOrder(
+                                orderPk,
+                                orderNumber: orderNo,
+                              );
                             },
                           );
                         },
@@ -1192,67 +994,6 @@ class _DashboardTabState extends State<DashboardTab> {
       title: Text(title, style: const TextStyle(fontWeight: FontWeight.w600)),
       subtitle: subtitle != null ? Text(subtitle) : null,
       onTap: onTap,
-    );
-  }
-
-  Widget _buildPrintCard({
-    required IconData icon,
-    required Color color,
-    required String title,
-    required String subtitle,
-    required VoidCallback onTap,
-  }) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 12),
-      child: InkWell(
-        onTap: onTap,
-        borderRadius: BorderRadius.circular(16),
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-          decoration: BoxDecoration(
-            color: Colors.grey.shade50,
-            borderRadius: BorderRadius.circular(16),
-            border: Border.all(color: Colors.grey.shade200),
-          ),
-          child: Row(
-            children: [
-              Container(
-                width: 44,
-                height: 44,
-                decoration: BoxDecoration(
-                  color: color.withOpacity(0.12),
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                child: Icon(icon, color: color, size: 24),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      title,
-                      style: const TextStyle(
-                        fontWeight: FontWeight.bold,
-                        fontSize: 15,
-                      ),
-                    ),
-                    const SizedBox(height: 4),
-                    Text(
-                      subtitle,
-                      style: TextStyle(
-                        fontSize: 12,
-                        color: Colors.grey.shade600,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              const Icon(Icons.chevron_right_rounded, color: Colors.black38),
-            ],
-          ),
-        ),
-      ),
     );
   }
 
@@ -1398,14 +1139,22 @@ class _DashboardTabState extends State<DashboardTab> {
       if (!mounted || cancelled) break;
       final orderId = _getOrderPk(o);
       final orderNumber = _getOrderNumber(o);
-      if (orderId <= 0) {
+      if (orderId <= 0 && _cleanPrintableOrderNumber(orderNumber) == null) {
         failed++;
         continue;
       }
       current = orderNumber;
       updateDialog?.call(() {});
       try {
-        await _printOrderById(orderId);
+        final printableOrderNumber =
+            _cleanPublicPrintableOrderNumber(orderNumber);
+        if (printableOrderNumber != null) {
+          await _printBackendOrderNumberOnly(printableOrderNumber);
+        } else if (orderId > 0) {
+          await _printOrderById(orderId, orderNumber: orderNumber);
+        } else {
+          throw Exception("Order number missing");
+        }
         printed++;
       } catch (_) {
         failed++;
@@ -1999,20 +1748,54 @@ class _DashboardTabState extends State<DashboardTab> {
   }
 
   Future<void> _printSingleOrder(int orderId, {String? orderNumber}) async {
-    if (orderId <= 0) {
+    final printableOrderNumber = _cleanPublicPrintableOrderNumber(orderNumber);
+    if (orderId <= 0 && printableOrderNumber == null) {
       _showSnackBar("Invalid order ID", Colors.red);
       return;
     }
+    final printingKey = orderId > 0 ? orderId : printableOrderNumber!.hashCode;
+    if (_printingOrderIds.contains(printingKey)) return;
+
+    if (mounted) {
+      setState(() => _printingOrderIds.add(printingKey));
+    } else {
+      _printingOrderIds.add(printingKey);
+    }
+
     try {
-      await _printOrderById(orderId);
-      final label = orderNumber ?? orderId.toString();
+      if (printableOrderNumber != null) {
+        await _printBackendOrderNumberOnly(printableOrderNumber);
+      } else if (orderId > 0) {
+        await _printOrderById(orderId, orderNumber: orderNumber);
+      } else {
+        throw Exception("Order number missing");
+      }
+      final label = printableOrderNumber ?? orderId.toString();
       _showSnackBar("Receipt printed (Order #$label)", Colors.green);
     } catch (e) {
       _showSnackBar("Print failed: $e", Colors.red);
+    } finally {
+      if (mounted) {
+        setState(() => _printingOrderIds.remove(printingKey));
+      } else {
+        _printingOrderIds.remove(printingKey);
+      }
     }
   }
 
-  Future<void> _printOrderById(int orderId) async {
+  Future<void> _printBackendOrderNumberOnly(String orderNumber) async {
+    final restaurantName = await _resolveRestaurantName();
+    await _printerService.printOrder(
+      orderId: 0,
+      orderNumber: orderNumber,
+      cartItems: const [],
+      restaurantName: restaurantName.isNotEmpty ? restaurantName : "Restaurant",
+      backendOnly: true,
+      preserveBackendPrintFormat: true,
+    );
+  }
+
+  Future<void> _printOrderById(int orderId, {String? orderNumber}) async {
     dynamic res;
     try {
       res = await AdminApi().getOrder(orderId.toString());
@@ -2022,6 +1805,8 @@ class _DashboardTabState extends State<DashboardTab> {
     final parsed = _parseOrderDetails(res.data);
     final txnId = _extractTxnId(res.data);
     final orderDate = _extractOrderDate(res.data);
+    final printableOrderNumber =
+        _resolvePrintableOrderNumber(res.data, fallback: orderNumber);
     final items = parsed.items;
     if (items.isEmpty) throw Exception("Order items not found");
     final parcelTotal = _extractParcelTotal(res.data, items);
@@ -2040,9 +1825,71 @@ class _DashboardTabState extends State<DashboardTab> {
       paymentMode: parsed.paymentMode,
       taxAmount: parsed.taxAmount,
       discountAmount: parsed.discountAmount,
+      orderNumber: printableOrderNumber,
+      preserveBackendPrintFormat: printableOrderNumber != null,
       removeTaxLines: !showTaxInReceipt,
       parcelTotalOverride: parcelTotal,
     );
+  }
+
+  String? _resolvePrintableOrderNumber(dynamic data, {String? fallback}) {
+    final direct = _cleanPrintableOrderNumber(fallback);
+    if (direct != null) return direct;
+
+    final found = _readPrintableOrderNumber(data);
+    return _cleanPrintableOrderNumber(found);
+  }
+
+  String? _readPrintableOrderNumber(dynamic value, {int depth = 5}) {
+    if (value == null || depth <= 0) return null;
+    if (value is Map) {
+      for (final key in const [
+        "order_number",
+        "orderNumber",
+        "order_no",
+        "orderNo",
+        "invoice_number",
+        "invoiceNumber",
+        "public_order_number",
+        "publicOrderNumber",
+        "number",
+      ]) {
+        final candidate = _cleanPrintableOrderNumber(value[key]);
+        if (candidate != null) return candidate;
+      }
+      for (final key in const [
+        "order",
+        "data",
+        "payload",
+        "result",
+        "details",
+      ]) {
+        final nested = _readPrintableOrderNumber(value[key], depth: depth - 1);
+        if (nested != null) return nested;
+      }
+    } else if (value is Iterable) {
+      for (final item in value) {
+        final nested = _readPrintableOrderNumber(item, depth: depth - 1);
+        if (nested != null) return nested;
+      }
+    }
+    return null;
+  }
+
+  String? _cleanPrintableOrderNumber(dynamic raw) {
+    final value = raw?.toString().trim();
+    if (value == null || value.isEmpty || value.toLowerCase() == "null") {
+      return null;
+    }
+    if (value.toLowerCase() == "n/a" || value == "0") return null;
+    return value;
+  }
+
+  String? _cleanPublicPrintableOrderNumber(dynamic raw) {
+    final value = _cleanPrintableOrderNumber(raw);
+    if (value == null) return null;
+    if (RegExp(r'^\d+$').hasMatch(value)) return null;
+    return value;
   }
 
   num _extractParcelTotal(
@@ -2356,7 +2203,7 @@ class _DashboardTabState extends State<DashboardTab> {
 
     // 1. Refined Button Design with state-aware styling
     Widget printButton = OutlinedButton.icon(
-      onPressed: _openPrintMenu,
+      onPressed: _printSummary,
       icon: const Icon(Icons.print_outlined, size: 18),
       label: const Text("Print Summary"),
       style: OutlinedButton.styleFrom(
@@ -2824,6 +2671,7 @@ class _DashboardTabState extends State<DashboardTab> {
     final String? itemsLabel = order['items_label']?.toString();
     final double dpr = MediaQuery.of(context).devicePixelRatio;
     final int thumbCache = (28 * dpr).round().clamp(1, 256);
+    final bool isPrintingOrder = _printingOrderIds.contains(orderId);
 
     return Container(
       margin: const EdgeInsets.only(bottom: 12),
@@ -2924,23 +2772,44 @@ class _DashboardTabState extends State<DashboardTab> {
         trailing: Material(
           color: Colors.transparent,
           child: Tooltip(
-            message: "Print receipt",
+            message: isPrintingOrder ? "Printing receipt..." : "Print receipt",
             child: InkWell(
               customBorder: const CircleBorder(),
               hoverColor: const Color(0xFF9F342C).withOpacity(0.12),
               splashColor: const Color(0xFF9F342C).withOpacity(0.18),
               highlightColor: const Color(0xFF9F342C).withOpacity(0.08),
-              onTap: () => _printSingleOrder(orderId, orderNumber: orderNumber),
+              onTap: isPrintingOrder
+                  ? null
+                  : () => _printSingleOrder(orderId, orderNumber: orderNumber),
               child: Ink(
                 padding: const EdgeInsets.all(10),
                 decoration: BoxDecoration(
-                  border: Border.all(color: Colors.grey.shade300),
+                  border: Border.all(
+                    color: isPrintingOrder
+                        ? const Color(0xFF9F342C).withOpacity(0.45)
+                        : Colors.grey.shade300,
+                  ),
                   shape: BoxShape.circle,
                 ),
-                child: const Icon(
-                  Icons.print_outlined,
-                  size: 40,
-                  color: Color(0xFF9F342C),
+                child: SizedBox(
+                  width: 40,
+                  height: 40,
+                  child: Center(
+                    child: isPrintingOrder
+                        ? const SizedBox(
+                            width: 26,
+                            height: 26,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 3,
+                              color: Color(0xFF9F342C),
+                            ),
+                          )
+                        : const Icon(
+                            Icons.print_outlined,
+                            size: 40,
+                            color: Color(0xFF9F342C),
+                          ),
+                  ),
                 ),
               ),
             ),

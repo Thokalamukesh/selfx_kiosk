@@ -7,12 +7,13 @@ plugins {
 android {
     namespace "com.example.api_selfxo_project"
     compileSdk 36
+    ndkVersion "28.2.13676358"
 
     defaultConfig {
         applicationId "com.example.api_selfxo_project"
 
-        // Required by charset_converter (minSdk 21)
-        minSdk 21
+        // Required by charset_converter.
+        minSdkVersion flutter.minSdkVersion
 
         // Google Play requirement
         targetSdk 33

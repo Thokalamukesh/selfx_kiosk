@@ -1,4 +1,4 @@
-// ignore_for_file: undefined_prefixed_name
+// ignore_for_file: avoid_web_libraries_in_flutter, undefined_prefixed_name
 
 import 'dart:async';
 import 'dart:html' as html;
@@ -31,7 +31,7 @@ class AppNetworkImage extends StatefulWidget {
     this.cacheWidth,
     this.cacheHeight,
     this.gaplessPlayback = false,
-    this.preferPlatformView = false,
+    this.preferPlatformView = true,
   });
 
   @override

@@ -1,15 +1,10 @@
-import 'dart:convert';
-
 import 'package:api_selfxo_project/api/kiosk_api.dart';
-import 'package:api_selfxo_project/printer/epson_usb_printer_service.dart';
 import 'package:api_selfxo_project/background_image/background_image.dart';
-import 'package:api_selfxo_project/printer/register_kiosk.dart';
 import 'package:api_selfxo_project/core/connectivity_service.dart';
-import 'package:flutter/cupertino.dart';
-import 'package:flutter/foundation.dart';
+import 'package:api_selfxo_project/core/kiosk_log.dart';
+import 'package:api_selfxo_project/printer/register_kiosk.dart';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:dio/dio.dart';
 
 import '../services/auth_service.dart';
 
@@ -21,43 +16,27 @@ class UserIdScreen extends StatefulWidget {
 }
 
 class _UserIdScreenState extends State<UserIdScreen> {
-  final TextEditingController controller = TextEditingController();
-  final EpsonUSBPrinterService _usbPrinterService = EpsonUSBPrinterService();
-
   bool loading = false;
   bool hasError = false;
+  String? _pairingCode;
+  String? _pairingDeviceUuid;
+  String? _pairingExpiresAt;
+  bool _pairingApproved = false;
 
   @override
   void initState() {
     super.initState();
-    _loadSavedRestaurantId();
-  }
-
-  Future<void> _loadSavedRestaurantId() async {
-    final prefs = await SharedPreferences.getInstance();
-    final savedRestaurantId = prefs.getString("restaurant_id")?.trim() ?? "";
-    if (!mounted || savedRestaurantId.isEmpty || controller.text.isNotEmpty) {
-      return;
-    }
-    controller.text = savedRestaurantId;
-  }
-
-  @override
-  void dispose() {
-    controller.dispose();
-    super.dispose();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _submit();
+    });
   }
 
   Future<void> _submit() async {
     if (loading) return;
-    final restaurantId = controller.text.trim();
-    if (restaurantId.isEmpty) {
-      _showError("Please enter a Restaurant ID");
-      return;
-    }
 
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setString("restaurant_id", restaurantId);
+    final deviceName = _resolveDeviceName(prefs);
+    await prefs.setString("pending_kiosk_device_name", deviceName);
 
     if (!ConnectivityService.instance.isOnline.value) {
       _showError("No internet connection");
@@ -67,153 +46,94 @@ class _UserIdScreenState extends State<UserIdScreen> {
     setState(() {
       loading = true;
       hasError = false;
+      _pairingCode = null;
+      _pairingDeviceUuid = null;
+      _pairingExpiresAt = null;
+      _pairingApproved = false;
     });
 
     try {
-      final ok = await AuthService().initializeKiosk(force: true);
+      final existingToken = prefs.getString("auth_token")?.trim() ?? "";
+      if (existingToken.isNotEmpty) {
+        await prefs.remove("pending_kiosk_device_name");
+        await _loadBootstrapForSetup();
+        final setupDone = prefs.getBool("kiosk_setup_done") ?? false;
+        final printerConfigured =
+            (prefs.getString("printer_type")?.trim().isNotEmpty ?? false);
+        final readyForWelcome = setupDone && printerConfigured;
+        if (!mounted) return;
+        Navigator.pushReplacement(
+          context,
+          MaterialPageRoute(
+            builder: (_) => readyForWelcome
+                ? const WelcomeScreen()
+                : const RegisterKioskScreen(),
+          ),
+        );
+        return;
+      }
+
+      final auth = AuthService();
+      await prefs.setBool("kiosk_setup_done", false);
+      final session = await auth.startPairing(force: true);
+      if (!mounted) return;
+      setState(() {
+        _pairingCode = session.pairingCode;
+        _pairingDeviceUuid = session.deviceUuid;
+        _pairingExpiresAt = session.expiresAt;
+      });
+
+      final ok = await auth.waitForPairing(
+        session,
+        onPairingCompleted: () {
+          if (!mounted) return;
+          setState(() => _pairingApproved = true);
+        },
+      );
       if (!ok) throw Exception("Registration failed");
 
-      final res = await KioskApi().getRestaurantData();
-      final data = res.data?["restaurant"];
-      final gst = data?["gst_number"] ??
-          data?["gstin"] ??
-          data?["tax_id"] ??
-          data?["taxId"] ??
-          data?["gst_no"] ??
-          data?["gst"];
-      if (gst != null && gst.toString().trim().isNotEmpty) {
-        await prefs.setString("gst_number", gst.toString().trim());
-      }
+      await prefs.remove("pending_kiosk_device_name");
+      await prefs.setBool("kiosk_setup_done", false);
+      await _loadBootstrapForSetup();
 
       if (!mounted) return;
-
-      await _handleUSBPrinterSelection();
-
-      final setupDone = prefs.getBool("kiosk_setup_done") ?? false;
-      if (!mounted) return;
-      if (!setupDone) {
-        Navigator.pushReplacement(
-          context,
-          MaterialPageRoute(builder: (_) => const RegisterKioskScreen()),
-        );
-      } else {
-        Navigator.pushReplacement(
-          context,
-          MaterialPageRoute(builder: (_) => const WelcomeScreen()),
-        );
-      }
-    } on DioException catch (e) {
+      Navigator.pushReplacement(
+        context,
+        MaterialPageRoute(builder: (_) => const RegisterKioskScreen()),
+      );
+    } catch (e) {
+      await prefs.remove("pending_kiosk_device_name");
       setState(() => hasError = true);
-      final data = e.response?.data;
-      String message = "Registration failed. Check ID and Internet.";
-      if (data is Map) {
-        final apiMessage =
-            data["message"] ?? data["error"] ?? data["errors"]?.toString();
-        if (apiMessage != null && apiMessage.toString().trim().isNotEmpty) {
-          message = apiMessage.toString();
-        }
-      }
-      _showError(message);
-    } catch (_) {
-      setState(() => hasError = true);
-      _showError("Registration failed. Check ID and Internet.");
+      final message = e.toString().replaceFirst("Exception: ", "").trim();
+      _showError(
+        message.isEmpty
+            ? "Registration failed. Check ID and Internet."
+            : message,
+      );
     } finally {
       if (mounted) setState(() => loading = false);
     }
   }
 
-  Future<void> _handleUSBPrinterSelection() async {
-    if (kIsWeb) return;
+  String _resolveDeviceName(SharedPreferences prefs) {
+    final pending = prefs.getString("pending_kiosk_device_name")?.trim();
+    if (pending != null && pending.isNotEmpty) return pending;
 
-    try {
-      final List<Map<String, dynamic>> printers =
-          await _usbPrinterService.getPrinterList();
+    final saved = prefs.getString("kiosk_name")?.trim();
+    if (saved != null && saved.isNotEmpty) return saved;
 
-      if (printers.isEmpty) {
-        await _showNoPrinterDialog();
-        return;
-      }
-
-      Map<String, dynamic>? selectedPrinter;
-
-      if (!mounted) return;
-      await showDialog(
-        context: context,
-        barrierDismissible: false,
-        builder: (context) => AlertDialog(
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(20),
-          ),
-          title: const Text("USB Printer Detected"),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const Text("Select the Epson printer for this Kiosk:"),
-              const SizedBox(height: 16),
-              SizedBox(
-                width: double.maxFinite,
-                child: ListView.builder(
-                  shrinkWrap: true,
-                  itemCount: printers.length,
-                  itemBuilder: (context, index) {
-                    final p = printers[index];
-                    return Card(
-                      color: Colors.grey.shade100,
-                      child: ListTile(
-                        leading: const Icon(Icons.usb, color: Colors.blue),
-                        title: Text(
-                          p["name"] ?? p["productName"] ?? "USB Printer",
-                        ),
-                        subtitle: Text(
-                          "Device: ${p["deviceId"] ?? "-"} • VID: ${p["vendorId"] ?? "-"} • PID: ${p["productId"] ?? "-"}",
-                        ),
-                        onTap: () {
-                          selectedPrinter = p;
-                          Navigator.pop(context);
-                        },
-                      ),
-                    );
-                  },
-                ),
-              ),
-            ],
-          ),
-        ),
-      );
-
-      if (selectedPrinter != null) {
-        final prefs = await SharedPreferences.getInstance();
-        await prefs.setString("printer_type", "usb");
-        await prefs.setString(
-          "selected_usb_printer",
-          jsonEncode(selectedPrinter),
-        );
-        await _usbPrinterService.setSelectedPrinter(selectedPrinter!);
-        await _usbPrinterService.scanAndConnect();
-
-        _showSuccessSnackBar(
-          "Printer Configured: ${selectedPrinter!["name"] ?? selectedPrinter!["productName"] ?? "USB Printer"}",
-        );
-      }
-    } catch (_) {}
+    return "Kiosk";
   }
 
-  Future<void> _showNoPrinterDialog() async {
-    await showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text("No Printer Found"),
-        content: const Text(
-          "Ensure your Epson USB printer is plugged in and turned on. You can configure this later in Settings.",
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text("OK"),
-          ),
-        ],
-      ),
-    );
+  Future<void> _loadBootstrapForSetup() async {
+    try {
+      await KioskApi().getRestaurantData();
+    } catch (e) {
+      kioskLogError("Bootstrap after pairing failed: $e", tag: "AUTH");
+      if (KioskApi.isBootstrapForbiddenError(e)) {
+        throw Exception(KioskApi.bootstrapDisabledHelpMessage(e));
+      }
+    }
   }
 
   void _showError(String msg) {
@@ -222,9 +142,124 @@ class _UserIdScreenState extends State<UserIdScreen> {
     );
   }
 
-  void _showSuccessSnackBar(String msg) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(msg), backgroundColor: Colors.green.shade800),
+  Widget _buildPairingStatus() {
+    final code = _pairingCode?.trim();
+    final deviceUuid = _pairingDeviceUuid?.trim();
+    if (!loading) {
+      return const SizedBox.shrink();
+    }
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 18),
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: const Color(0xFFFFF6F4),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: const Color(0xFFE7B7B2)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.center,
+        children: [
+          const Text(
+            "Pairing Code",
+            textAlign: TextAlign.center,
+            style: TextStyle(
+              fontSize: 18,
+              fontWeight: FontWeight.w900,
+              color: Color(0xFF7A221B),
+            ),
+          ),
+          if (code != null && code.isNotEmpty) ...[
+            const SizedBox(height: 14),
+            _buildPairingCodeDigits(code),
+            const SizedBox(height: 12),
+            const Text(
+              "Enter this code in the restaurant admin panel.",
+              textAlign: TextAlign.center,
+              style: TextStyle(fontSize: 13, color: Colors.black54),
+            ),
+          ] else ...[
+            const SizedBox(height: 12),
+            Text(
+              deviceUuid == null || deviceUuid.isEmpty
+                  ? "Starting pairing..."
+                  : "Pairing started. Waiting for code...",
+              textAlign: TextAlign.center,
+              style: const TextStyle(fontSize: 13, color: Colors.black54),
+            ),
+          ],
+          if (_pairingExpiresAt != null &&
+              _pairingExpiresAt!.trim().isNotEmpty) ...[
+            const SizedBox(height: 6),
+            Text(
+              "Expires at ${_pairingExpiresAt!.trim()}",
+              textAlign: TextAlign.center,
+              style: const TextStyle(fontSize: 12, color: Colors.black45),
+            ),
+          ],
+          const SizedBox(height: 12),
+          LinearProgressIndicator(
+            minHeight: 3,
+            backgroundColor: const Color(0xFFF1D7D4),
+            color: _pairingApproved
+                ? const Color(0xFF1B8E3E)
+                : const Color(0xFF9F342C),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            _pairingApproved
+                ? "Approved. Opening kiosk..."
+                : "Waiting for approval...",
+            textAlign: TextAlign.center,
+            style: const TextStyle(fontSize: 12, color: Colors.black54),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildPairingCodeDigits(String code) {
+    final digits = code.split("");
+    return Semantics(
+      label: "Pairing code $code",
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          for (var i = 0; i < digits.length; i++) ...[
+            Expanded(
+              child: Container(
+                height: 58,
+                alignment: Alignment.center,
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(
+                    color: const Color(0xFF9F342C),
+                    width: 1.5,
+                  ),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withOpacity(0.06),
+                      blurRadius: 8,
+                      offset: const Offset(0, 3),
+                    ),
+                  ],
+                ),
+                child: Text(
+                  digits[i],
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(
+                    fontSize: 30,
+                    fontWeight: FontWeight.w900,
+                    color: Color(0xFF9F342C),
+                  ),
+                ),
+              ),
+            ),
+            if (i != digits.length - 1) const SizedBox(width: 8),
+          ],
+        ],
+      ),
     );
   }
 
@@ -296,23 +331,25 @@ class _UserIdScreenState extends State<UserIdScreen> {
                     const SizedBox(height: 20),
                   ],
                   const Text(
-                    "Please Register kiosk with your Restaurant",
+                    "Approve this kiosk",
                     textAlign: TextAlign.center,
                     style: TextStyle(
                       fontSize: 20,
                       fontWeight: FontWeight.w700,
                     ),
                   ),
-                  const SizedBox(height: 20),
-                  CupertinoTextField(
-                    controller: controller,
-                    placeholder: "Enter Restaurant ID",
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 14,
-                      vertical: 14,
+                  const SizedBox(height: 8),
+                  const Text(
+                    "Enter the pairing code in your restaurant admin panel.",
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      fontSize: 13,
+                      color: Colors.black54,
+                      height: 1.35,
                     ),
                   ),
                   const SizedBox(height: 20),
+                  _buildPairingStatus(),
                   SizedBox(
                     height: 48,
                     child: ElevatedButton(
@@ -322,15 +359,26 @@ class _UserIdScreenState extends State<UserIdScreen> {
                         foregroundColor: Colors.white,
                       ),
                       child: loading
-                          ? const SizedBox(
-                              width: 20,
-                              height: 20,
-                              child: CircularProgressIndicator(
-                                strokeWidth: 2,
-                                color: Colors.white,
-                              ),
+                          ? Row(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                const SizedBox(
+                                  width: 18,
+                                  height: 18,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                    color: Colors.white,
+                                  ),
+                                ),
+                                const SizedBox(width: 10),
+                                Text(
+                                  _pairingApproved
+                                      ? "Opening kiosk"
+                                      : "Waiting for approval",
+                                ),
+                              ],
                             )
-                          : const Text("Continue"),
+                          : const Text("Retry pairing"),
                     ),
                   ),
                 ],

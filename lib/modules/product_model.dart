@@ -4,6 +4,7 @@ class ProductModel {
   final String category;
   final int price;
   final String image;
+  final String description;
   bool? isBestSeller;
   final String type;
 
@@ -17,6 +18,7 @@ class ProductModel {
     required this.category,
     required this.price,
     required this.image,
+    this.description = "",
     this.type = "veg",
     this.isBestSeller = false,
     this.variations = const [], // Default empty
@@ -98,7 +100,18 @@ class ProductModel {
       name: json["item_name"] ?? "",
       category: json["category_name"] ?? "",
       price: int.tryParse(json["price"].toString()) ?? 0,
-      image: json["item_photo_url"] ?? "",
+      image: json["item_photo_url"] ??
+          json["image_url"] ??
+          json["image"] ??
+          json["photo_url"] ??
+          "",
+      description: (json["description"] ??
+              json["item_description"] ??
+              json["itemDescription"] ??
+              json["short_description"] ??
+              json["shortDescription"] ??
+              "")
+          .toString(),
       type: normalizeType(rawType),
       isBestSeller: json["is_best_seller"] == 1 || json["best_selling"] == 1,
       // ✅ Map from API keys

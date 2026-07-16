@@ -366,7 +366,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         restaurantName: restaurantName,
         address: restaurantAddress,
       );
-      _showSnackBar("Test kioskLog successful", Colors.blue);
+      _showSnackBar("Test print started", Colors.blue);
     } on PlatformException catch (e) {
       if (e.code == "USB_PERMISSION_REQUIRED") {
         final printer = await printerService.getSelectedUsbPrinter();
@@ -377,7 +377,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         final requested = await _usbService.requestUsbPermission(printer);
         if (requested) {
           _pendingTestPrint = true;
-          _showSnackBar("Grant USB permission to kioskLog", Colors.orange);
+          _showSnackBar("Grant USB permission to print", Colors.orange);
         } else {
           _showSnackBar("USB device not found", Colors.red);
         }
@@ -519,7 +519,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                           child: ElevatedButton.icon(
                             onPressed: () async {
                               final uri = Uri.parse(
-                                'https://selfpos.sirixo.com/apk/selfxkiosk4.0.apk', // 👈 your link
+                                'https://selfpos.sirixo.com/apk/selfxnew.apk', // 👈 your link
                               );
 
                               if (await canLaunchUrl(uri)) {

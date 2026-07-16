@@ -4,18 +4,20 @@ import 'package:api_selfxo_project/core/kiosk_bootstrap.dart';
 import 'package:api_selfxo_project/core/kiosk_config.dart';
 import 'package:api_selfxo_project/core/kiosk_memory_service.dart';
 import 'package:api_selfxo_project/core/connectivity_service.dart';
+import 'package:api_selfxo_project/core/kiosk_log.dart';
 import 'package:api_selfxo_project/core/kiosk_restaurant_meta.dart';
 import 'package:api_selfxo_project/core/order_utils.dart';
 import 'package:api_selfxo_project/core/receipt_print_mode.dart';
 import 'package:api_selfxo_project/core/image_url.dart';
+import 'package:api_selfxo_project/widget/app_network_image.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../api/kiosk_api.dart';
-import '../screens/register_screen.dart';
 import '../screens/main_navigation.dart';
 import '../screens/pin_screen.dart';
+import '../screens/register_screen.dart';
 
 class WelcomeScreen extends StatefulWidget {
   const WelcomeScreen({super.key});
@@ -26,6 +28,8 @@ class WelcomeScreen extends StatefulWidget {
 
 class _WelcomeScreenState extends State<WelcomeScreen>
     with WidgetsBindingObserver {
+  static const String _defaultClosedMessage =
+      "Restaurant closed. Please check back later.";
   Timer? _sliderTimer;
   Timer? _adminTapResetTimer;
   VoidCallback? _maintenanceListener;
@@ -35,35 +39,24 @@ class _WelcomeScreenState extends State<WelcomeScreen>
 
   bool isLoading = true;
   bool hasError = false;
+  bool _bootstrapForbidden = false;
   String? _errorDetails;
   bool _openingAdmin = false;
   bool _openingOrder = false;
   bool _loadingRestaurant = false;
-  bool _webMenuRedirected = false;
+  bool _restaurantClosed = false;
+  String? _restaurantClosedMessage;
   VoidCallback? _onlineListener;
   int _adminTapCount = 0;
 
   String restaurantName = "Start Your Order";
+  String? restaurantLogoUrl;
+  Color restaurantPrimaryColor = const Color(0xFF9F342C);
   List<String> banners = [];
   int currentIndex = 0;
+  int _sliderIntervalSeconds = 6;
   bool _showDineIn = true;
   bool _showPickup = true;
-
-  Future<void> _redirectToRegisterScreen() async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.remove("auth_token");
-    await prefs.remove("admin_token");
-    await prefs.remove("device_uuid");
-    await prefs.remove("device_id");
-    await prefs.setBool("kiosk_setup_done", false);
-
-    if (!mounted) return;
-
-    Navigator.of(context).pushAndRemoveUntil(
-      MaterialPageRoute(builder: (_) => const UserIdScreen()),
-      (_) => false,
-    );
-  }
 
   @override
   void initState() {
@@ -80,7 +73,7 @@ class _WelcomeScreenState extends State<WelcomeScreen>
     ConnectivityService.instance.start();
     _onlineListener = () {
       final online = ConnectivityService.instance.isOnline.value;
-      if (online && (hasError || isLoading)) {
+      if (online && !_bootstrapForbidden && (hasError || isLoading)) {
         if (!mounted) return;
         setState(() {
           isLoading = true;
@@ -118,6 +111,7 @@ class _WelcomeScreenState extends State<WelcomeScreen>
   Future<void> _loadRestaurant() async {
     if (_loadingRestaurant) return;
     _loadingRestaurant = true;
+    _bootstrapForbidden = false;
     try {
       await DeviceBootstrap.ensureDeviceReady();
       final prefs = await SharedPreferences.getInstance();
@@ -127,15 +121,30 @@ class _WelcomeScreenState extends State<WelcomeScreen>
       final restaurant = res.data["restaurant"];
       final media = restaurant?["media"];
       final kioskSettings = res.data["kiosk_settings"];
+      final rawLogoUrl = _resolveLogoUrl(
+            root: res.data is Map ? res.data : null,
+            restaurant: restaurant is Map ? restaurant : null,
+            kioskSettings: kioskSettings is Map ? kioskSettings : null,
+          ) ??
+          prefs.getString("restaurant_logo_url");
+      final normalizedLogoUrl = normalizeImageUrl(rawLogoUrl);
+      kioskLog(
+        "bootstrap logo raw=${rawLogoUrl ?? '-'} normalized=${normalizedLogoUrl.isEmpty ? '-' : normalizedLogoUrl}",
+        tag: "WELCOME",
+      );
+      final parsedPrimaryColor = _parseHexColor(
+            restaurant is Map
+                ? (restaurant["primary_color"] ?? restaurant["primaryColor"])
+                : null,
+          ) ??
+          _parseHexColor(
+            kioskSettings is Map
+                ? (kioskSettings["primary_color"] ??
+                    kioskSettings["primaryColor"])
+                : null,
+          );
 
       final backendDeviceId = kioskSettings?["device_id"];
-      final hasBackendDeviceId = backendDeviceId != null &&
-          backendDeviceId.toString().trim().isNotEmpty;
-      if (!hasBackendDeviceId) {
-        await _redirectToRegisterScreen();
-        return;
-      }
-
       if (backendDeviceId != null && backendDeviceId.toString().isNotEmpty) {
         await prefs.setString("device_uuid", backendDeviceId.toString());
       }
@@ -159,122 +168,521 @@ class _WelcomeScreenState extends State<WelcomeScreen>
         kioskSettings: kioskSettings is Map ? kioskSettings : null,
       );
 
-      List<String> tempBanners = [];
+      List<String> tempBanners = _extractWelcomeBackgroundSlides(
+        root: res.data is Map ? res.data : null,
+        restaurant: restaurant is Map ? restaurant : null,
+        kioskSettings: kioskSettings is Map ? kioskSettings : null,
+      );
+
       if (media is List) {
-        tempBanners = media
+        final mediaBanners = media
             .whereType<Map>()
-            .where((m) => m["path"] != null)
-            .map<String>((m) => normalizeImageUrl(m["path"].toString()))
+            .where((m) => !_isLogoLikeMedia(m))
+            .map<String?>((m) => _firstImageUrl(m))
+            .whereType<String>()
+            .map<String>(normalizeImageUrl)
             .where(isSupportedRasterImageUrl)
             .toList();
+        tempBanners = [
+          ...tempBanners,
+          ...mediaBanners.where((url) => !tempBanners.contains(url)),
+        ];
       }
 
-      if (tempBanners.isEmpty &&
-          kioskSettings is Map &&
-          kioskSettings["home_banner_url"] != null) {
-        final bannerUrl = normalizeImageUrl(
-          kioskSettings["home_banner_url"].toString(),
+      if (tempBanners.isEmpty) {
+        final savedBackgroundUrl = normalizeImageUrl(
+          prefs.getString("home_background_url") ??
+              prefs.getString("home_banner_url"),
         );
-        if (isSupportedRasterImageUrl(bannerUrl)) {
-          tempBanners.add(bannerUrl);
+        if (isSupportedRasterImageUrl(savedBackgroundUrl)) {
+          tempBanners.add(savedBackgroundUrl);
+        }
+      }
+
+      if (tempBanners.isEmpty) {
+        for (final source in [
+          kioskSettings is Map ? kioskSettings : null,
+          restaurant is Map ? restaurant : null,
+          res.data is Map ? res.data : null,
+        ]) {
+          final rawUrl = _firstImageUrl(source);
+          final bannerUrl = normalizeImageUrl(rawUrl);
+          if (isSupportedRasterImageUrl(bannerUrl)) {
+            tempBanners.add(bannerUrl);
+            break;
+          }
         }
       }
 
       if (!mounted) return;
 
-      final types = _resolveOrderTypeAvailability(
-        restaurant is Map ? restaurant : null,
-        kioskSettings is Map ? kioskSettings : null,
+      final types = KioskRestaurantMeta.resolveWelcomeOrderTypes(
+        root: res.data is Map ? res.data : null,
+        restaurant: restaurant is Map ? restaurant : null,
+        kioskSettings: kioskSettings is Map ? kioskSettings : null,
       );
-
+      final sliderIntervalSeconds = _resolveSliderIntervalSeconds(
+        root: res.data is Map ? res.data : null,
+        restaurant: restaurant is Map ? restaurant : null,
+        kioskSettings: kioskSettings is Map ? kioskSettings : null,
+      );
       setState(() {
-        restaurantName = savedDisplayName ??
-            KioskRestaurantMeta.resolveRestaurantName(
-              restaurant: restaurant is Map ? restaurant : null,
-              kioskSettings: kioskSettings is Map ? kioskSettings : null,
-              fallback: "Start Your Order",
-            );
+        restaurantName = KioskRestaurantMeta.resolveRestaurantName(
+          restaurant: restaurant is Map ? restaurant : null,
+          kioskSettings: kioskSettings is Map ? kioskSettings : null,
+          fallback: savedDisplayName ?? "Start Your Order",
+        );
+        restaurantLogoUrl = isSupportedRasterImageUrl(normalizedLogoUrl)
+            ? normalizedLogoUrl
+            : null;
+        restaurantPrimaryColor = parsedPrimaryColor ?? const Color(0xFF9F342C);
         banners = tempBanners;
         currentIndex =
             tempBanners.isEmpty ? 0 : currentIndex % tempBanners.length;
+        _sliderIntervalSeconds = sliderIntervalSeconds;
         _showDineIn = types["dine_in"] ?? true;
         _showPickup = types["pickup"] ?? true;
+        _restaurantClosed = false;
+        _restaurantClosedMessage = null;
         isLoading = false;
         hasError = false;
         _errorDetails = null;
       });
 
-      if (kIsWeb && !_webMenuRedirected) {
-        _webMenuRedirected = true;
-        final orderType = _resolveInitialWebOrderType(types);
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (!mounted) return;
-          Navigator.pushReplacement(
-            context,
-            PageRouteBuilder(
-              pageBuilder: (_, __, ___) => MainNavigation(orderType: orderType),
-              transitionDuration: Duration.zero,
-              reverseTransitionDuration: Duration.zero,
-            ),
-          );
-        });
-        return;
-      }
-
       _startSlider();
     } catch (e) {
-      final rawError = e.toString();
-      final isRestaurantNotConfigured =
-          rawError.contains("RESTAURANT_NOT_CONFIGURED");
-
-      if (kIsWeb && isRestaurantNotConfigured) {
-        await _redirectToRegisterScreen();
+      final forbidden = KioskApi.isBootstrapForbiddenError(e);
+      if (!forbidden && KioskApi.isKioskAuthError(e)) {
+        await _returnToPairingScreen();
         return;
       }
+      kioskLogError(
+        "Restaurant bootstrap failed",
+        tag: "WELCOME",
+        error: e,
+      );
+      final userError = KioskApi.kioskLoadMessageFrom(e);
 
       if (!mounted) return;
+      final closedReason = _closedReasonFromMessage(userError);
       setState(() {
-        hasError = true;
+        hasError = closedReason == null;
+        _bootstrapForbidden = forbidden;
         isLoading = false;
-        _errorDetails = rawError;
+        _restaurantClosed = closedReason != null;
+        _restaurantClosedMessage = closedReason;
+        _errorDetails = userError;
       });
     } finally {
       _loadingRestaurant = false;
     }
   }
 
-  String _resolveInitialWebOrderType(Map<String, bool> types) {
-    final requested = Uri.base.queryParameters["order_type"] ??
-        Uri.base.queryParameters["orderType"] ??
-        Uri.base.queryParameters["type"];
-    final normalizedRequested =
-        requested == null ? null : _normalizeOrderType(requested);
+  String? _closedReasonFromMessage(String? message) {
+    if (message == null) return null;
+    final text = message.toLowerCase();
+    final isClosed = text.contains("restaurant closed") ||
+        text.contains("store closed") ||
+        text.contains("kitchen closed") ||
+        text.contains("outside business") ||
+        text.contains("outside opening") ||
+        text.contains("not accepting") ||
+        text.contains("not available") ||
+        text.contains("unavailable") ||
+        text.contains("no item") ||
+        text.contains("no menu") ||
+        text.contains("time up") ||
+        text.contains("closed now");
+    return isClosed ? _defaultClosedMessage : null;
+  }
 
-    if (normalizedRequested == "pickup" ||
-        normalizedRequested == "takeaway" ||
-        normalizedRequested == "take_away") {
-      if (types["pickup"] == true) return "pickup";
+  String? _firstImageUrl(Map? data) {
+    if (data == null) return null;
+    for (final key in const [
+      "home_background_url",
+      "homeBackgroundUrl",
+      "home_background",
+      "homeBackground",
+      "home_banner_url",
+      "homeBannerUrl",
+      "banner_url",
+      "bannerUrl",
+      "background_image_url",
+      "backgroundImageUrl",
+      "cover_url",
+      "coverUrl",
+      "image_url",
+      "imageUrl",
+      "path",
+      "url",
+    ]) {
+      final value = data[key]?.toString().trim();
+      if (value != null && value.isNotEmpty && value.toLowerCase() != "null") {
+        return value;
+      }
+    }
+    return null;
+  }
+
+  List<String> _extractWelcomeBackgroundSlides({
+    required Map? root,
+    required Map? restaurant,
+    required Map? kioskSettings,
+  }) {
+    final urls = <String>[];
+    final rootKiosk = _mapValue(root?["kiosk"]);
+    final rootSettings = _mapValue(root?["settings"]);
+    final rootAppearance = _mapValue(root?["appearance"]);
+    final normalizedSettings = _mapValue(root?["kiosk_settings"]);
+    final kioskAppearance = _mapValue(kioskSettings?["appearance"]);
+    final rootKioskAppearance = _mapValue(rootKiosk?["appearance"]);
+    final rootSettingsAppearance = _mapValue(rootSettings?["appearance"]);
+    final restaurantAppearance = _mapValue(restaurant?["appearance"]);
+
+    final sources = <Map?>[
+      root,
+      rootKiosk,
+      rootKioskAppearance,
+      rootSettings,
+      rootSettingsAppearance,
+      rootAppearance,
+      normalizedSettings,
+      kioskSettings,
+      kioskAppearance,
+      restaurant,
+      restaurantAppearance,
+    ];
+
+    for (final source in sources.whereType<Map>()) {
+      for (final key in const [
+        "home_background_url",
+        "homeBackgroundUrl",
+        "home_background",
+        "homeBackground",
+        "background_image_url",
+        "backgroundImageUrl",
+        "home_background_images",
+        "homeBackgroundImages",
+        "background_images",
+        "backgroundImages",
+        "screensaver_images",
+        "screensaverImages",
+        "screen_saver_images",
+        "screenSaverImages",
+        "screensaver_slides",
+        "screensaverSlides",
+        "screen_saver_slides",
+        "screenSaverSlides",
+        "screensaver",
+        "screen_saver",
+        "idle_slides",
+        "idleSlides",
+        "kiosk_slides",
+        "kioskSlides",
+        "slides",
+      ]) {
+        _collectSlideUrls(source[key], urls);
+      }
     }
 
-    if (normalizedRequested == "dine_in" || normalizedRequested == "dinein") {
-      if (types["dine_in"] == true) return "dine_in";
+    return urls.toSet().toList();
+  }
+
+  Map? _mapValue(dynamic value) {
+    return value is Map ? value : null;
+  }
+
+  void _collectSlideUrls(dynamic raw, List<String> urls) {
+    if (raw == null) return;
+
+    if (raw is List) {
+      for (final item in raw) {
+        _collectSlideUrls(item, urls);
+      }
+      return;
     }
 
-    if (types["dine_in"] == true) return "dine_in";
-    if (types["pickup"] == true) return "pickup";
-    return "dine_in";
+    final rawUrl = _firstSlideUrl(raw);
+    final url = normalizeImageUrl(rawUrl);
+    if (isSupportedRasterImageUrl(url) && !urls.contains(url)) {
+      urls.add(url);
+    }
+
+    if (raw is Map) {
+      for (final key in const [
+        "data",
+        "slides",
+        "items",
+        "files",
+        "images",
+        "media",
+      ]) {
+        _collectSlideUrls(raw[key], urls);
+      }
+    }
+  }
+
+  String? _firstSlideUrl(dynamic raw) {
+    if (raw == null) return null;
+    if (raw is String) return raw.trim();
+    if (raw is! Map) return null;
+
+    for (final key in const [
+      "home_background_url",
+      "homeBackgroundUrl",
+      "home_background",
+      "homeBackground",
+      "background_image_url",
+      "backgroundImageUrl",
+      "media_url",
+      "mediaUrl",
+      "file_url",
+      "fileUrl",
+      "image_url",
+      "imageUrl",
+      "gif_url",
+      "gifUrl",
+      "full_url",
+      "fullUrl",
+      "original_url",
+      "originalUrl",
+      "preview_url",
+      "previewUrl",
+      "thumbnail_url",
+      "thumbnailUrl",
+      "src",
+      "source",
+      "path",
+      "url",
+    ]) {
+      final value = raw[key]?.toString().trim();
+      if (value != null && value.isNotEmpty && value.toLowerCase() != "null") {
+        return value;
+      }
+    }
+
+    for (final key in const [
+      "media",
+      "file",
+      "image",
+      "asset",
+      "data",
+      "item",
+    ]) {
+      final value = raw[key];
+      final nested = _firstSlideUrl(value);
+      if (nested != null && nested.isNotEmpty) return nested;
+    }
+
+    for (final key in const [
+      "slides",
+      "items",
+      "files",
+      "images",
+      "videos",
+    ]) {
+      final value = raw[key];
+      if (value is List && value.isNotEmpty) {
+        final nested = _firstSlideUrl(value.first);
+        if (nested != null && nested.isNotEmpty) return nested;
+      }
+    }
+
+    return null;
+  }
+
+  bool _isLogoLikeMedia(Map item) {
+    final marker = [
+      item["collection_name"],
+      item["collectionName"],
+      item["type"],
+      item["name"],
+      item["key"],
+      item["tag"],
+    ].whereType<Object>().join(" ").toLowerCase();
+
+    return marker.contains("logo") ||
+        marker.contains("brand") ||
+        marker.contains("restaurant_logo");
+  }
+
+  String? _resolveLogoUrl({
+    required Map? root,
+    required Map? restaurant,
+    required Map? kioskSettings,
+  }) {
+    for (final source in [restaurant, kioskSettings, root].whereType<Map>()) {
+      final direct = _firstLogoUrl(source);
+      if (direct != null) return direct;
+    }
+
+    for (final source in [restaurant, kioskSettings, root].whereType<Map>()) {
+      final mediaLogo = _logoFromMedia(source["media"]);
+      if (mediaLogo != null) return mediaLogo;
+    }
+
+    return null;
+  }
+
+  String? _firstLogoUrl(dynamic data, {int depth = 4}) {
+    if (data == null || depth <= 0) return null;
+    if (data is String) {
+      final value = data.trim();
+      return value.isNotEmpty && value.toLowerCase() != "null" ? value : null;
+    }
+    if (data is List) {
+      for (final item in data) {
+        final nested = _firstLogoUrl(item, depth: depth - 1);
+        if (nested != null) return nested;
+      }
+      return null;
+    }
+    if (data is! Map) return null;
+
+    for (final key in const [
+      "logo_url",
+      "logoUrl",
+      "logo_full_url",
+      "logoFullUrl",
+      "logo_path",
+      "logoPath",
+      "brand_logo_url",
+      "brandLogoUrl",
+      "restaurant_logo_url",
+      "restaurantLogoUrl",
+      "restaurant_logo",
+      "restaurantLogo",
+    ]) {
+      if (!data.containsKey(key)) continue;
+      final nested = _firstLogoUrl(data[key], depth: depth - 1);
+      if (nested != null) return nested;
+    }
+
+    for (final key in const [
+      "logo",
+      "brand_logo",
+      "brandLogo",
+      "branding",
+      "appearance",
+      "image",
+      "file",
+    ]) {
+      if (!data.containsKey(key)) continue;
+      final nested = _firstLogoUrl(data[key], depth: depth - 1);
+      if (nested != null) return nested;
+    }
+
+    for (final key in const [
+      "url",
+      "path",
+      "src",
+      "source",
+      "media_url",
+      "mediaUrl",
+      "file_url",
+      "fileUrl",
+      "full_url",
+      "fullUrl",
+      "original_url",
+      "originalUrl",
+      "preview_url",
+      "previewUrl",
+      "image_url",
+      "imageUrl",
+    ]) {
+      final value = data[key]?.toString().trim();
+      if (value != null && value.isNotEmpty && value.toLowerCase() != "null") {
+        return value;
+      }
+    }
+
+    return null;
+  }
+
+  int _resolveSliderIntervalSeconds({
+    required Map? root,
+    required Map? restaurant,
+    required Map? kioskSettings,
+  }) {
+    final rootKiosk = _mapValue(root?["kiosk"]);
+    final rootSettings = _mapValue(root?["settings"]);
+    final normalizedSettings = _mapValue(root?["kiosk_settings"]);
+
+    for (final source in [
+      kioskSettings,
+      normalizedSettings,
+      rootKiosk,
+      rootSettings,
+      restaurant,
+      root,
+    ].whereType<Map>()) {
+      for (final key in const [
+        "screensaver_interval_seconds",
+        "screensaverIntervalSeconds",
+        "screen_saver_interval_seconds",
+        "screenSaverIntervalSeconds",
+        "slide_interval_seconds",
+        "slideIntervalSeconds",
+      ]) {
+        final value = int.tryParse(source[key]?.toString() ?? "");
+        if (value != null && value > 0) {
+          return value.clamp(2, 60).toInt();
+        }
+      }
+    }
+    return 6;
+  }
+
+  String? _logoFromMedia(dynamic media) {
+    if (media is! List) return null;
+
+    String? fallback;
+    for (final item in media.whereType<Map>()) {
+      final url = _firstLogoUrl(item);
+      if (url == null) continue;
+      fallback ??= url;
+
+      final marker = [
+        item["collection_name"],
+        item["collectionName"],
+        item["type"],
+        item["name"],
+        item["key"],
+        item["tag"],
+      ].whereType<Object>().join(" ").toLowerCase();
+
+      if (marker.contains("logo") ||
+          marker.contains("brand") ||
+          marker.contains("restaurant")) {
+        return url;
+      }
+    }
+    return fallback;
+  }
+
+  Color? _parseHexColor(dynamic raw) {
+    final text = raw?.toString().trim();
+    if (text == null || text.isEmpty) return null;
+    final normalized = text.startsWith("#") ? text.substring(1) : text;
+    if (normalized.length != 6 && normalized.length != 8) return null;
+    final value = int.tryParse(normalized, radix: 16);
+    if (value == null) return null;
+    return Color(normalized.length == 6 ? 0xFF000000 | value : value);
   }
 
   void _startSlider() {
     _sliderTimer?.cancel();
     if (!KioskConfig.enableAutoScroll) return;
     if (banners.length < 2) return;
-    _sliderTimer = Timer.periodic(const Duration(seconds: 6), (_) {
-      if (!mounted || banners.isEmpty) return;
-      setState(() {
-        currentIndex = (currentIndex + 1) % banners.length;
-      });
-    });
+    _sliderTimer = Timer.periodic(
+      Duration(seconds: _sliderIntervalSeconds),
+      (_) {
+        if (!mounted || banners.isEmpty) return;
+        setState(() {
+          currentIndex = (currentIndex + 1) % banners.length;
+        });
+      },
+    );
   }
 
   void _handleMaintenanceTick() {
@@ -339,22 +747,19 @@ class _WelcomeScreenState extends State<WelcomeScreen>
 
   @override
   Widget build(BuildContext context) {
-    if (kIsWeb) {
-      if (hasError) {
+    if (hasError) {
+      if (_bootstrapForbidden) {
+        return _buildBootstrapUnavailableScreen();
+      }
+      if (kIsWeb) {
         return _buildWebErrorScreen();
       }
-      return _buildWebLoadingScreen();
-    }
-
-    if (hasError) {
-      return const Scaffold(
-        backgroundColor: Colors.black,
-        body: Center(
-          child: CircularProgressIndicator(color: Colors.white),
-        ),
-      );
+      return _buildLocalErrorScreen();
     }
     if (isLoading) {
+      if (kIsWeb) {
+        return _buildWebLoadingScreen();
+      }
       return const Scaffold(
         backgroundColor: Colors.black,
         body: Center(child: CircularProgressIndicator(color: Colors.white)),
@@ -381,27 +786,12 @@ class _WelcomeScreenState extends State<WelcomeScreen>
         child: Stack(
           children: [
             Positioned.fill(
-              child: banners.isEmpty
-                  ? Container(color: Colors.black)
-                  : AnimatedSwitcher(
-                      duration: const Duration(milliseconds: 900),
-                      switchInCurve: Curves.easeInOut,
-                      switchOutCurve: Curves.easeInOut,
-                      transitionBuilder: (child, animation) =>
-                          FadeTransition(opacity: animation, child: child),
-                      child: Image.network(
-                        bannerUrl,
-                        key: ValueKey(
-                          "banner-refresh-$_mediaRefreshKey-${currentIndex % banners.length}",
-                        ),
-                        fit: BoxFit.cover,
-                        cacheWidth: bannerCacheWidth,
-                        cacheHeight: bannerCacheHeight,
-                        filterQuality: FilterQuality.low,
-                        errorBuilder: (_, __, ___) =>
-                            Container(color: Colors.black),
-                      ),
-                    ),
+              child: _welcomeBackground(
+                bannerUrl: bannerUrl,
+                bannerCacheWidth: bannerCacheWidth,
+                bannerCacheHeight: bannerCacheHeight,
+                isTablet: isTablet,
+              ),
             ),
             Positioned.fill(
               child: Container(
@@ -419,55 +809,39 @@ class _WelcomeScreenState extends State<WelcomeScreen>
               ),
             ),
             Positioned(
-              top: -5,
-              left: -30,
-              right: -10, // 🔒 full width so right alignment works
+              top: 0,
+              left: 0,
+              right: 0,
               child: SafeArea(
                 child: Padding(
-                  padding: EdgeInsets.symmetric(
-                    horizontal: isTablet ? 40 : 16,
-                    vertical: 10,
+                  padding: EdgeInsets.fromLTRB(
+                    isTablet ? 20 : 10,
+                    isTablet ? 10 : 6,
+                    isTablet ? 20 : 10,
+                    0,
                   ),
-                  child: Row(
-                    children: [
-                      Expanded(
-                        child: Align(
-                          alignment: Alignment.centerLeft,
-                          child: _glassContainer(
-                            isTablet: isTablet,
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                Text(
-                                  restaurantName.toUpperCase(),
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: TextStyle(
-                                    color: Colors.white,
-                                    fontSize: isTablet ? 24 : 16,
-                                    fontWeight: FontWeight.w900,
-                                    letterSpacing: 1.2,
-                                  ),
-                                ),
-                                const SizedBox(height: 4),
-                                Text(
-                                  "(A PRODUCT OF SIRIXO)",
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: TextStyle(
-                                    color: Colors.white,
-                                    fontSize: isTablet ? 12 : 10,
-                                    fontWeight: FontWeight.w600,
-                                    letterSpacing: 1.1,
-                                  ),
-                                ),
-                              ],
-                            ),
+                  child: Align(
+                    alignment: Alignment.topLeft,
+                    child: ConstrainedBox(
+                      constraints: BoxConstraints(
+                        maxWidth: isTablet ? 560 : screenSize.width * 0.78,
+                      ),
+                      child: _glassContainer(
+                        isTablet: isTablet,
+                        child: Text(
+                          restaurantName.toUpperCase(),
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontSize: isTablet ? 22 : 14,
+                            height: 1.08,
+                            fontWeight: FontWeight.w900,
+                            letterSpacing: 0.2,
                           ),
                         ),
                       ),
-                    ],
+                    ),
                   ),
                 ),
               ),
@@ -565,6 +939,199 @@ class _WelcomeScreenState extends State<WelcomeScreen>
     );
   }
 
+  Widget _buildLocalErrorScreen() {
+    return Scaffold(
+      backgroundColor: const Color(0xFFF7F7F7),
+      body: Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 520),
+            child: Container(
+              padding: const EdgeInsets.all(24),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(20),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withValues(alpha: 0.08),
+                    blurRadius: 20,
+                    offset: const Offset(0, 10),
+                  ),
+                ],
+              ),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Container(
+                    width: 72,
+                    height: 72,
+                    decoration: const BoxDecoration(
+                      color: Color(0xFFFFF1EE),
+                      shape: BoxShape.circle,
+                    ),
+                    child: const Icon(
+                      Icons.sync_problem_rounded,
+                      size: 38,
+                      color: Color(0xFF9F342C),
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  const Text(
+                    "Kiosk could not load",
+                    style: TextStyle(
+                      fontSize: 22,
+                      fontWeight: FontWeight.w800,
+                    ),
+                    textAlign: TextAlign.center,
+                  ),
+                  const SizedBox(height: 10),
+                  Text(
+                    (_errorDetails == null || _errorDetails!.trim().isEmpty)
+                        ? "Retry loading, or pair this kiosk again from the admin panel."
+                        : _errorDetails!,
+                    style: const TextStyle(
+                      color: Colors.black87,
+                      height: 1.45,
+                    ),
+                    textAlign: TextAlign.center,
+                  ),
+                  const SizedBox(height: 18),
+                  SizedBox(
+                    width: double.infinity,
+                    child: ElevatedButton(
+                      onPressed: () {
+                        setState(() {
+                          isLoading = true;
+                          hasError = false;
+                          _bootstrapForbidden = false;
+                        });
+                        _loadRestaurant();
+                      },
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: const Color(0xFF9F342C),
+                        foregroundColor: Colors.white,
+                      ),
+                      child: const Text("Retry"),
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  SizedBox(
+                    width: double.infinity,
+                    child: OutlinedButton(
+                      onPressed: _returnToPairingScreen,
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: const Color(0xFF9F342C),
+                        side: const BorderSide(color: Color(0xFF9F342C)),
+                      ),
+                      child: const Text("Pair again"),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildBootstrapUnavailableScreen() {
+    return Scaffold(
+      backgroundColor: const Color(0xFFF7F7F7),
+      body: Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 520),
+            child: Container(
+              padding: const EdgeInsets.all(24),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(20),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withOpacity(0.08),
+                    blurRadius: 20,
+                    offset: const Offset(0, 10),
+                  ),
+                ],
+              ),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Container(
+                    width: 72,
+                    height: 72,
+                    decoration: const BoxDecoration(
+                      color: Color(0xFFFFF1EE),
+                      shape: BoxShape.circle,
+                    ),
+                    child: const Icon(
+                      Icons.store_mall_directory_outlined,
+                      size: 38,
+                      color: Color(0xFF9F342C),
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  const Text(
+                    "Kiosk ordering is disabled",
+                    style: TextStyle(
+                      fontSize: 22,
+                      fontWeight: FontWeight.w800,
+                    ),
+                    textAlign: TextAlign.center,
+                  ),
+                  const SizedBox(height: 10),
+                  Text(
+                    _errorDetails ??
+                        "Enable kiosk ordering for this restaurant in the admin panel, then retry.",
+                    style: const TextStyle(
+                      color: Colors.black87,
+                      height: 1.45,
+                    ),
+                    textAlign: TextAlign.center,
+                  ),
+                  const SizedBox(height: 18),
+                  SizedBox(
+                    width: double.infinity,
+                    child: ElevatedButton(
+                      onPressed: () {
+                        setState(() {
+                          isLoading = true;
+                          hasError = false;
+                          _bootstrapForbidden = false;
+                        });
+                        _loadRestaurant();
+                      },
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: const Color(0xFF9F342C),
+                        foregroundColor: Colors.white,
+                      ),
+                      child: const Text("Retry"),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _returnToPairingScreen() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove("auth_token");
+    await prefs.remove("admin_token");
+    await prefs.setBool("kiosk_setup_done", false);
+    if (!mounted) return;
+    Navigator.of(context).pushAndRemoveUntil(
+      MaterialPageRoute(builder: (_) => const UserIdScreen()),
+      (_) => false,
+    );
+  }
+
   void _handleHiddenAdminTap() {
     _adminTapResetTimer?.cancel();
     _adminTapCount += 1;
@@ -578,6 +1145,56 @@ class _WelcomeScreenState extends State<WelcomeScreen>
     _adminTapResetTimer = Timer(const Duration(seconds: 3), () {
       _adminTapCount = 0;
     });
+  }
+
+  Widget _welcomeBackground({
+    required String bannerUrl,
+    required int bannerCacheWidth,
+    required int bannerCacheHeight,
+    required bool isTablet,
+  }) {
+    final hasBanner = bannerUrl.trim().isNotEmpty;
+    if (!hasBanner) {
+      return _brandedFallbackBackground(isTablet: isTablet);
+    }
+
+    return AnimatedSwitcher(
+      duration: const Duration(milliseconds: 900),
+      switchInCurve: Curves.easeInOut,
+      switchOutCurve: Curves.easeInOut,
+      transitionBuilder: (child, animation) =>
+          FadeTransition(opacity: animation, child: child),
+      child: AppNetworkImage(
+        key: ValueKey(
+          "banner-refresh-$_mediaRefreshKey-${currentIndex % banners.length}",
+        ),
+        url: bannerUrl,
+        fit: BoxFit.cover,
+        cacheWidth: bannerCacheWidth,
+        cacheHeight: bannerCacheHeight,
+        fallback: _brandedFallbackBackground(isTablet: isTablet),
+      ),
+    );
+  }
+
+  Widget _brandedFallbackBackground({required bool isTablet}) {
+    final base = restaurantPrimaryColor;
+    return _plainBrandBackground(base);
+  }
+
+  Widget _plainBrandBackground(Color base) {
+    return Container(
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [
+            base,
+            Color.lerp(base, Colors.black, 0.45) ?? Colors.black,
+          ],
+        ),
+      ),
+    );
   }
 
   Future<void> _openAdminPin() async {
@@ -597,6 +1214,71 @@ class _WelcomeScreenState extends State<WelcomeScreen>
   }
 
   Widget _orderPanel(bool isTablet) {
+    if (_restaurantClosed) {
+      return Container(
+        padding: EdgeInsets.all(isTablet ? 24 : 20),
+        decoration: BoxDecoration(
+          color: Colors.black.withOpacity(0.42),
+          borderRadius: BorderRadius.circular(28),
+          border: Border.all(color: Colors.white.withOpacity(0.22)),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              Icons.storefront_rounded,
+              color: Colors.white,
+              size: isTablet ? 58 : 42,
+            ),
+            const SizedBox(height: 14),
+            Text(
+              "RESTAURANT CLOSED",
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                fontSize: isTablet ? 38 : 25,
+                fontWeight: FontWeight.w900,
+                color: Colors.white,
+                letterSpacing: 0,
+              ),
+            ),
+            const SizedBox(height: 10),
+            Text(
+              _restaurantClosedMessage ?? _defaultClosedMessage,
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                fontSize: isTablet ? 18 : 14,
+                height: 1.35,
+                color: Colors.white.withOpacity(0.88),
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+            const SizedBox(height: 18),
+            OutlinedButton.icon(
+              onPressed: () {
+                setState(() {
+                  isLoading = true;
+                  hasError = false;
+                  _restaurantClosed = false;
+                  _restaurantClosedMessage = null;
+                });
+                _loadRestaurant();
+              },
+              style: OutlinedButton.styleFrom(
+                foregroundColor: Colors.white,
+                side: const BorderSide(color: Colors.white),
+                padding: EdgeInsets.symmetric(
+                  horizontal: isTablet ? 26 : 20,
+                  vertical: isTablet ? 16 : 12,
+                ),
+              ),
+              icon: const Icon(Icons.refresh_rounded),
+              label: const Text("Retry"),
+            ),
+          ],
+        ),
+      );
+    }
+
     return Container(
       padding: EdgeInsets.all(isTablet ? 15 : 25),
       decoration: BoxDecoration(
@@ -625,8 +1307,7 @@ class _WelcomeScreenState extends State<WelcomeScreen>
                     child: SizedBox(
                       width: isTablet ? 360 : 240,
                       child: _orderButton(
-                        "   EAT HERE",
-                        Icons.restaurant_rounded,
+                        "EAT HERE",
                         Colors.green.shade700,
                         "dine_in",
                         isTablet,
@@ -641,7 +1322,6 @@ class _WelcomeScreenState extends State<WelcomeScreen>
                         width: isTablet ? 360 : 240,
                         child: _orderButton(
                           "TAKE AWAY",
-                          Icons.shopping_bag_rounded,
                           Colors.orange.shade800,
                           "pickup",
                           isTablet,
@@ -662,7 +1342,6 @@ class _WelcomeScreenState extends State<WelcomeScreen>
                       Expanded(
                         child: _orderButton(
                           "EAT HERE",
-                          Icons.restaurant_rounded,
                           Colors.green.shade700,
                           "dine_in",
                           isTablet,
@@ -674,7 +1353,6 @@ class _WelcomeScreenState extends State<WelcomeScreen>
                       Expanded(
                         child: _orderButton(
                           "TAKE AWAY",
-                          Icons.shopping_bag_rounded,
                           Colors.orange.shade800,
                           "pickup",
                           isTablet,
@@ -694,77 +1372,6 @@ class _WelcomeScreenState extends State<WelcomeScreen>
     );
   }
 
-  Map<String, bool> _resolveOrderTypeAvailability(
-    Map? restaurant,
-    Map? kioskSettings,
-  ) {
-    bool? dineIn;
-    bool? pickup;
-
-    final sources = [kioskSettings, restaurant];
-    for (final src in sources) {
-      if (src is! Map) continue;
-
-      final listVal = _readList(src, const [
-        "order_types",
-        "orderTypes",
-        "available_order_types",
-        "order_type_list",
-        "orderTypeList",
-        "order_type",
-        "orderType",
-      ]);
-      if (listVal != null && listVal.isNotEmpty) {
-        final types = listVal.map(_normalizeOrderType).toSet();
-        if (types.any((t) => t == "dine_in" || t == "dinein")) {
-          dineIn = true;
-        }
-        if (types.any(
-          (t) => t == "pickup" || t == "takeaway" || t == "take_away",
-        )) {
-          pickup = true;
-        }
-        if (dineIn != true) dineIn = false;
-        if (pickup != true) pickup = false;
-      }
-
-      dineIn ??= _readBool(src, const [
-        "dine_in",
-        "dinein",
-        "eat_here",
-        "eatHere",
-        "is_dine_in",
-        "dine_in_enabled",
-        "eat_here_enabled",
-        "allow_dine_in_orders",
-      ]);
-
-      pickup ??= _readBool(src, const [
-        "pickup",
-        "takeaway",
-        "take_away",
-        "takeAway",
-        "is_pickup",
-        "pickup_enabled",
-        "takeaway_enabled",
-        "take_away_enabled",
-        "allow_customer_pickup_orders",
-      ]);
-
-      final allowCustomerOrders = _readBool(src, const [
-        "allow_customer_orders",
-        "customer_orders_enabled",
-        "allow_orders",
-      ]);
-      if (allowCustomerOrders == false) {
-        dineIn = false;
-        pickup = false;
-      }
-    }
-
-    return {"dine_in": dineIn ?? true, "pickup": pickup ?? true};
-  }
-
   String? _extractTaxId(Map? restaurant, Map? kioskSettings) {
     final sources = [kioskSettings, restaurant];
     for (final src in sources) {
@@ -782,46 +1389,8 @@ class _WelcomeScreenState extends State<WelcomeScreen>
     return null;
   }
 
-  bool? _readBool(Map src, List<String> keys) {
-    for (final k in keys) {
-      if (!src.containsKey(k)) continue;
-      final v = src[k];
-      if (v is bool) return v;
-      if (v is num) return v > 0;
-      if (v is String) {
-        final s = v.trim().toLowerCase();
-        if (s == "true" || s == "1" || s == "yes") return true;
-        if (s == "false" || s == "0" || s == "no") return false;
-      }
-    }
-    return null;
-  }
-
-  List<String>? _readList(Map src, List<String> keys) {
-    for (final k in keys) {
-      if (!src.containsKey(k)) continue;
-      final v = src[k];
-      if (v is List) {
-        return v.map((e) => e.toString()).toList();
-      }
-      if (v is String && v.isNotEmpty) {
-        return v.split(",").map((e) => e.trim()).toList();
-      }
-    }
-    return null;
-  }
-
-  String _normalizeOrderType(String value) {
-    return value
-        .trim()
-        .toLowerCase()
-        .replaceAll("-", "_")
-        .replaceAll(RegExp(r"\s+"), "_");
-  }
-
   Widget _orderButton(
     String label,
-    IconData icon,
     Color color,
     String type,
     bool isTablet,
@@ -854,29 +1423,22 @@ class _WelcomeScreenState extends State<WelcomeScreen>
             ),
           ],
         ),
-        child: Row(
-          // Changed from Column to Row
-          children: [
-            Icon(icon, size: isTablet ? 60 : 30, color: Colors.white),
-            SizedBox(width: isTablet ? 15 : 8),
-            Expanded(
-              child: FittedBox(
-                fit: BoxFit.scaleDown,
-                alignment: Alignment.centerLeft,
-                child: Text(
-                  label,
-                  maxLines: 1,
-                  softWrap: false,
-                  overflow: TextOverflow.fade,
-                  style: TextStyle(
-                    color: Colors.white,
-                    fontWeight: FontWeight.w900,
-                    fontSize: isTablet ? 30 : 12,
-                  ),
-                ),
+        child: Center(
+          child: FittedBox(
+            fit: BoxFit.scaleDown,
+            child: Text(
+              label.trim(),
+              maxLines: 1,
+              softWrap: false,
+              overflow: TextOverflow.fade,
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                color: Colors.white,
+                fontWeight: FontWeight.w900,
+                fontSize: isTablet ? 30 : 18,
               ),
             ),
-          ],
+          ),
         ),
       ),
     );
@@ -884,20 +1446,20 @@ class _WelcomeScreenState extends State<WelcomeScreen>
 
   Widget _glassContainer({required Widget child, required bool isTablet}) {
     return ClipRRect(
-      borderRadius: BorderRadius.circular(15),
+      borderRadius: BorderRadius.circular(14),
       child: Container(
         constraints: BoxConstraints(
-          minWidth: isTablet ? 260 : 0,
-          maxWidth: isTablet ? 420 : 220,
+          minWidth: 0,
+          maxWidth: isTablet ? 520 : 300,
         ),
         padding: EdgeInsets.symmetric(
-          horizontal: isTablet ? 20 : 14,
-          vertical: isTablet ? 10 : 8,
+          horizontal: isTablet ? 12 : 8,
+          vertical: isTablet ? 7 : 5,
         ),
         decoration: BoxDecoration(
-          color: Colors.white10,
-          borderRadius: BorderRadius.circular(15),
-          border: Border.all(color: Colors.white24),
+          color: Colors.black.withOpacity(0.28),
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(color: Colors.white.withOpacity(0.24)),
         ),
         child: child,
       ),

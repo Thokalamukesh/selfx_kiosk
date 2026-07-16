@@ -5,6 +5,7 @@ import 'package:api_selfxo_project/core/image_url.dart';
 import 'package:api_selfxo_project/core/kiosk_config.dart';
 import 'package:api_selfxo_project/core/kiosk_memory_service.dart';
 import 'package:api_selfxo_project/widget/app_network_image.dart';
+import 'package:api_selfxo_project/widget/product_description_dialog.dart';
 import '../modules/product_model.dart';
 
 class BestSellingWidget extends StatefulWidget {
@@ -345,6 +346,18 @@ class _BestSellingWidgetState extends State<BestSellingWidget> {
     return topLeft & render.size;
   }
 
+  void _showDescription(ProductModel product) {
+    final description = cleanProductDescription(product.description);
+    if (description.isEmpty) return;
+    showProductDescriptionDialog(
+      context: context,
+      name: product.name,
+      description: description,
+      imagePath: product.image,
+      isVeg: product.isVeg,
+    );
+  }
+
   Widget _buildProductCard(ProductModel p, bool isTablet) {
     BuildContext? imageContext;
     final int qty = qtyMap[p.id] ?? 0;
@@ -562,7 +575,8 @@ class _BestSellingWidgetState extends State<BestSellingWidget> {
                 (constraints.maxWidth * dpr).round().clamp(1, 4096);
             final cacheHeight =
                 (constraints.maxHeight * dpr).round().clamp(1, 4096);
-            return imageUrl.isNotEmpty
+            final description = cleanProductDescription(p.description);
+            final image = imageUrl.isNotEmpty
                 ? AppNetworkImage(
                     key: ValueKey('best-selling-image-${p.id}'),
                     url: imageUrl,
@@ -588,6 +602,19 @@ class _BestSellingWidgetState extends State<BestSellingWidget> {
                       size: isTablet ? 40 : 26,
                     ),
                   );
+
+            return Material(
+              color: Colors.transparent,
+              child: InkWell(
+                onTap: description.isEmpty ? null : () => _showDescription(p),
+                child: Stack(
+                  fit: StackFit.expand,
+                  children: [
+                    image,
+                  ],
+                ),
+              ),
+            );
           },
         );
       },

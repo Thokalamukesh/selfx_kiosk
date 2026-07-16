@@ -6,8 +6,10 @@ import 'package:intl/intl.dart';
 import 'package:api_selfxo_project/background_image/background_image.dart';
 import 'package:api_selfxo_project/api/admin_api.dart';
 import 'package:api_selfxo_project/api/kiosk_api.dart';
-import 'package:api_selfxo_project/core/kiosk_restaurant_meta.dart';
+import 'package:api_selfxo_project/core/india_time.dart';
 import 'package:api_selfxo_project/core/kiosk_log.dart';
+import 'package:api_selfxo_project/core/kiosk_restaurant_meta.dart';
+import 'package:api_selfxo_project/core/order_utils.dart';
 
 class OrdersHistoryTab extends StatefulWidget {
   const OrdersHistoryTab({super.key});
@@ -61,13 +63,14 @@ class _OrdersHistoryTabState extends State<OrdersHistoryTab>
   Future<void> _loadOrders({bool force = false, String? component}) async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      final branchId = prefs.getInt("branch_id");
-      final restaurantId = prefs.getString("restaurant_id");
+      final branchId = _readPrefString(prefs, "branch_id");
+      final restaurantId = _readPrefString(prefs, "restaurant_id");
+      final machineScope = _MachineOrderScope.fromPrefs(prefs);
 
       final rangeKey = _dateRangeValue(dateRangeFilter);
       final statusKey = _statusFilterValue(statusFilter);
       final requestKey =
-          "${branchId ?? ''}|${restaurantId ?? ''}|$rangeKey|$statusKey";
+          "${branchId ?? ''}|${restaurantId ?? ''}|${machineScope.cacheKey}|$rangeKey|$statusKey";
       if (!force && _hasLoaded && _lastRequestKey == requestKey) {
         return;
       }
@@ -81,17 +84,52 @@ class _OrdersHistoryTabState extends State<OrdersHistoryTab>
       _loadingInFlight = true;
       if (mounted) setState(() => loading = true);
 
-      final dio = await DioClient.getAdminDio();
-
       final Map<String, dynamic> body = {
         "dateRange": _dateRangeValue(dateRangeFilter),
         "status": _statusFilterValue(statusFilter),
+        if (machineScope.terminalId != null)
+          "terminal_id": machineScope.terminalId,
+        if (machineScope.deviceUuid != null)
+          "device_uuid": machineScope.deviceUuid,
+        if (machineScope.deviceId != null) "device_id": machineScope.deviceId,
       };
 
-      final res = await dio.post("admin/orders", data: body);
-      if (!mounted || requestId != _activeRequestId) return;
-
-      final nextOrders = _extractOrders(res.data);
+      List rawOrders;
+      if (statusFilter == _OrderStatusFilter.cancelled) {
+        rawOrders = await _fetchCancelledOrders(body);
+      } else {
+        rawOrders = await _fetchOrdersForHistory(body);
+        if (!mounted || requestId != _activeRequestId) return;
+      }
+      if (statusFilter == _OrderStatusFilter.all) {
+        rawOrders = await _withCancelledOrders(body, rawOrders);
+        if (!mounted || requestId != _activeRequestId) return;
+      }
+      final dateFilteredOrders =
+          rawOrders.where(_matchesSelectedDateRange).toList();
+      final enforceMachineMetadata =
+          dateFilteredOrders.any(_hasOrderOriginMetadata);
+      var nextOrders = dateFilteredOrders
+          .where(
+            (order) => _belongsToThisMachine(
+              order,
+              machineScope,
+              enforceMachineMetadata: enforceMachineMetadata,
+            ),
+          )
+          .toList();
+      if (dateFilteredOrders.isNotEmpty && nextOrders.isEmpty) {
+        kioskLog(
+          "Order history machine filter produced 0 visible orders from ${dateFilteredOrders.length}; showing date-filtered orders",
+          tag: "ORDER_HISTORY",
+        );
+        nextOrders = dateFilteredOrders;
+      }
+      nextOrders.sort(_compareOrdersNewestFirst);
+      kioskLog(
+        "Order history loaded raw=${rawOrders.length} date=${dateFilteredOrders.length} visible=${nextOrders.length} range=$rangeKey status=$statusKey",
+        tag: "ORDER_HISTORY",
+      );
       if (mounted) {
         setState(() {
           allOrders = nextOrders;
@@ -116,6 +154,24 @@ class _OrdersHistoryTabState extends State<OrdersHistoryTab>
     }
   }
 
+  Future<List> _fetchOrdersForHistory(Map<String, dynamic> body) async {
+    try {
+      final orders = await OrderUtils.getOrdersWithItems(
+        dateRange: body["dateRange"]?.toString() ?? "today",
+        status: "",
+      );
+      if (orders.isNotEmpty) return orders;
+    } catch (e) {
+      kioskLog(
+        "Order history shared loader failed, falling back to AdminApi: $e",
+        tag: "ORDER_HISTORY",
+      );
+    }
+
+    final res = await AdminApi().getOrders(body);
+    return _extractOrders(res.data);
+  }
+
   // ================= FILTER LOGIC =================
   void _onSearchChanged() {
     setState(() {
@@ -130,6 +186,8 @@ class _OrdersHistoryTabState extends State<OrdersHistoryTab>
       temp = temp.where((o) => _isPaidStatus(_getStatus(o)));
     } else if (statusFilter == _OrderStatusFilter.pending) {
       temp = temp.where((o) => _isPendingStatus(_getStatus(o)));
+    } else if (statusFilter == _OrderStatusFilter.cancelled) {
+      temp = temp.where((o) => _isCancelledStatus(_getStatus(o)));
     }
     if (searchQuery.isNotEmpty) {
       temp = temp.where((o) {
@@ -143,11 +201,11 @@ class _OrdersHistoryTabState extends State<OrdersHistoryTab>
           final dateStr = DateFormat('dd MMM yyyy').format(dt).toLowerCase();
           if (dateStr.contains(searchQuery)) return true;
           if (searchQuery == "today") {
-            return _isSameDay(_dateOnly(dt), _dateOnly(DateTime.now()));
+            return _isSameDay(_dateOnly(dt), _dateOnly(IndiaTime.now()));
           }
           if (searchQuery == "yesterday") {
             final y = _dateOnly(
-              DateTime.now().subtract(const Duration(days: 1)),
+              IndiaTime.now().subtract(const Duration(days: 1)),
             );
             return _isSameDay(_dateOnly(dt), y);
           }
@@ -165,12 +223,14 @@ class _OrdersHistoryTabState extends State<OrdersHistoryTab>
   }
 
   void _setStatusFilter(_OrderStatusFilter next) {
-    if (statusFilter == next) {
-      statusFilter = _OrderStatusFilter.all;
-    } else {
-      statusFilter = next;
-    }
-    _applyLocalFilters();
+    setState(() {
+      if (next == _OrderStatusFilter.all || statusFilter == next) {
+        statusFilter = _OrderStatusFilter.all;
+      } else {
+        statusFilter = next;
+      }
+      _applyLocalFilters();
+    });
     _loadOrders(component: "status_filter");
   }
 
@@ -265,6 +325,7 @@ class _OrdersHistoryTabState extends State<OrdersHistoryTab>
                     physics: const AlwaysScrollableScrollPhysics(),
                     slivers: [
                       SliverToBoxAdapter(child: _buildDateRangeFilters()),
+                      SliverToBoxAdapter(child: _buildStatusSummaryFilters()),
                       SliverToBoxAdapter(
                         child: Container(
                           padding: const EdgeInsets.symmetric(
@@ -352,7 +413,7 @@ class _OrdersHistoryTabState extends State<OrdersHistoryTab>
   }
 
   Widget _buildOrderCard(dynamic o) {
-    final status = _getStatus(o).toLowerCase();
+    final status = _getStatus(o);
     final amount = _getAmount(o);
     final dateStr = _formatOrderDate(o);
     final imageUrl = _getItemImage(o);
@@ -588,12 +649,73 @@ class _OrdersHistoryTabState extends State<OrdersHistoryTab>
     );
   }
 
+  Widget _buildStatusSummaryFilters() {
+    final successfulCount =
+        allOrders.where((order) => _isPaidStatus(_getStatus(order))).length;
+    final pendingCount =
+        allOrders.where((order) => _isPendingStatus(_getStatus(order))).length;
+    final cancelledCount = allOrders
+        .where((order) => _isCancelledStatus(_getStatus(order)))
+        .length;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(10, 0, 10, 8),
+      child: Row(
+        children: [
+          Expanded(
+            child: _summaryCard(
+              title: "All",
+              value: allOrders.length.toString(),
+              color: const Color(0xFF607D8B),
+              icon: Icons.receipt_long_rounded,
+              selected: statusFilter == _OrderStatusFilter.all,
+              onTap: () => _setStatusFilter(_OrderStatusFilter.all),
+            ),
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: _summaryCard(
+              title: "Successful",
+              value: successfulCount.toString(),
+              color: const Color(0xFF1B8E3E),
+              icon: Icons.check_circle_rounded,
+              selected: statusFilter == _OrderStatusFilter.paid,
+              onTap: () => _setStatusFilter(_OrderStatusFilter.paid),
+            ),
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: _summaryCard(
+              title: "Pending",
+              value: pendingCount.toString(),
+              color: Colors.orange,
+              icon: Icons.hourglass_bottom_rounded,
+              selected: statusFilter == _OrderStatusFilter.pending,
+              onTap: () => _setStatusFilter(_OrderStatusFilter.pending),
+            ),
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: _summaryCard(
+              title: "Cancelled",
+              value: cancelledCount.toString(),
+              color: Colors.red,
+              icon: Icons.cancel_rounded,
+              selected: statusFilter == _OrderStatusFilter.cancelled,
+              onTap: () => _setStatusFilter(_OrderStatusFilter.cancelled),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   Future<void> _printOrderFromHistory(
     dynamic o, {
     List<Map<String, dynamic>>? items,
   }) async {
     final orderId = _resolveOrderId(o, orderPk: _getOrderPk(o));
-    if (orderId <= 0) {
+    final orderNumber = _getOrderLabel(o);
+    if (orderId <= 0 && orderNumber.isEmpty) {
       _showSnack("Invalid order ID", Colors.red);
       return;
     }
@@ -603,9 +725,13 @@ class _OrdersHistoryTabState extends State<OrdersHistoryTab>
 
     try {
       try {
-        res = await AdminApi().getOrder(orderId.toString());
+        res = await AdminApi().getOrder(
+          orderNumber.isEmpty ? orderId.toString() : orderNumber,
+        );
       } catch (_) {
-        res = await KioskApi().getOrderDetails(orderId);
+        if (orderId > 0) {
+          res = await KioskApi().getOrderDetails(orderId);
+        }
       }
       final data = res?.data ?? {};
       final normalized = data is Map ? Map<String, dynamic>.from(data) : {};
@@ -617,7 +743,7 @@ class _OrdersHistoryTabState extends State<OrdersHistoryTab>
       // ignore
     }
 
-    if (finalItems.isEmpty) {
+    if (finalItems.isEmpty && orderNumber.isEmpty) {
       _showSnack("Order items not found", Colors.red);
       return;
     }
@@ -656,11 +782,19 @@ class _OrdersHistoryTabState extends State<OrdersHistoryTab>
         taxAmount: taxAmount,
         discountAmount: discountAmount,
         orderType: orderTypeLabel,
+        orderNumber: orderNumber.isEmpty ? null : orderNumber,
+        preserveBackendPrintFormat: orderNumber.isNotEmpty,
         removeTaxLines: !showTaxInReceipt,
         parcelTotalOverride: parcelTotal,
       );
       _showSnack("Print started", Colors.green);
-    } catch (e) {
+    } catch (e, stackTrace) {
+      kioskLogError(
+        "Admin history print failed order=${orderNumber.isEmpty ? orderId : orderNumber}",
+        tag: "ORDER_HISTORY",
+        error: e,
+        stackTrace: stackTrace,
+      );
       _showSnack("Print failed", Colors.red);
     }
   }
@@ -705,7 +839,7 @@ class _OrdersHistoryTabState extends State<OrdersHistoryTab>
       "take_away_charge_total",
     ];
     for (final key in keys) {
-      final v = order?[key];
+      final v = order[key];
       final num value = v is num ? v : num.tryParse("$v") ?? 0;
       if (value > 0) return value;
     }
@@ -794,7 +928,7 @@ class _OrdersHistoryTabState extends State<OrdersHistoryTab>
 
   void _showOrderDetailsDialog(dynamic o) {
     final orderLabel = _getOrderLabel(o);
-    String status = _getStatus(o).toLowerCase();
+    String status = _getStatus(o);
     final amount = _getAmount(o);
     final time = _formatOrderDate(o);
     final txnId = _getTxnId(o);
@@ -839,6 +973,10 @@ class _OrdersHistoryTabState extends State<OrdersHistoryTab>
               final detailedType = _getOrderType(normalized);
               if (detailedType.isNotEmpty && detailedType != "N/A") {
                 orderTypeLabel = detailedType;
+              }
+              final detailedStatus = _getStatus(normalized);
+              if (detailedStatus.trim().isNotEmpty) {
+                status = detailedStatus;
               }
             } catch (_) {
               items = [];
@@ -1247,12 +1385,10 @@ class _OrdersHistoryTabState extends State<OrdersHistoryTab>
   }
 
   Widget _statusChip(String status, {bool dense = true}) {
-    final s = status.toLowerCase();
+    final s = _getStatusLabel(status).toLowerCase();
     Color color = Colors.grey;
     IconData icon = Icons.info_outline_rounded;
-    if (s.contains("paid") ||
-        s.contains("completed") ||
-        s.contains("success")) {
+    if (s.contains("successful")) {
       color = const Color(0xFF1B8E3E);
       icon = Icons.check_circle_rounded;
     } else if (s.contains("pending") ||
@@ -1281,7 +1417,7 @@ class _OrdersHistoryTabState extends State<OrdersHistoryTab>
           Icon(icon, size: dense ? 12 : 14, color: color),
           SizedBox(width: dense ? 4 : 6),
           Text(
-            status.replaceAll('_', ' ').toUpperCase(),
+            _getStatusLabel(status).toUpperCase(),
             style: TextStyle(
               color: color,
               fontWeight: FontWeight.w700,
@@ -1516,11 +1652,12 @@ class _OrdersHistoryTabState extends State<OrdersHistoryTab>
   }
 
   Widget _buildStatusBadge(String status, {double maxWidth = 90}) {
+    final label = _getStatusLabel(status);
+    final normalized = label.toLowerCase();
     Color color = Colors.grey;
-    if (status.contains("paid") || status.contains("completed"))
-      color = Colors.green;
-    if (status.contains("pending")) color = Colors.orange;
-    if (status.contains("cancel")) color = Colors.red;
+    if (normalized == "successful") color = Colors.green;
+    if (normalized == "pending") color = Colors.orange;
+    if (normalized == "cancelled" || normalized == "failed") color = Colors.red;
 
     return Container(
       constraints: BoxConstraints(maxWidth: maxWidth),
@@ -1530,7 +1667,7 @@ class _OrdersHistoryTabState extends State<OrdersHistoryTab>
         borderRadius: BorderRadius.circular(6),
       ),
       child: Text(
-        status.replaceAll('_', ' ').toUpperCase(),
+        label.toUpperCase(),
         maxLines: 1,
         overflow: TextOverflow.ellipsis,
         style: TextStyle(
@@ -1563,16 +1700,71 @@ class _OrdersHistoryTabState extends State<OrdersHistoryTab>
 
   int _toIntSafe(dynamic v) => v == null ? 0 : int.tryParse(v.toString()) ?? 0;
 
+  String? _readPrefString(SharedPreferences prefs, String key) {
+    try {
+      final value = prefs.get(key);
+      final text = value?.toString().trim();
+      return text == null || text.isEmpty ? null : text;
+    } catch (_) {
+      return null;
+    }
+  }
+
   bool _isSameDay(DateTime a, DateTime b) {
     return a.year == b.year && a.month == b.month && a.day == b.day;
   }
 
   DateTime _dateOnly(DateTime d) => DateTime(d.year, d.month, d.day);
 
+  DateTime _startOfWeek(DateTime d) {
+    final local = _dateOnly(d);
+    return local.subtract(Duration(days: local.weekday - 1));
+  }
+
+  bool _matchesSelectedDateRange(dynamic order) {
+    final dt = _parseOrderCreatedAt(order);
+    if (dt == null) return true;
+
+    final date = _dateOnly(dt);
+    final now = _dateOnly(IndiaTime.now());
+    switch (dateRangeFilter) {
+      case _DateRangeFilter.today:
+        return _isSameDay(date, now);
+      case _DateRangeFilter.yesterday:
+        return _isSameDay(date, now.subtract(const Duration(days: 1)));
+      case _DateRangeFilter.thisWeek:
+        final start = _startOfWeek(now);
+        final end = start.add(const Duration(days: 6));
+        return !date.isBefore(start) && !date.isAfter(end);
+      case _DateRangeFilter.lastWeek:
+        final start = _startOfWeek(now).subtract(const Duration(days: 7));
+        final end = start.add(const Duration(days: 6));
+        return !date.isBefore(start) && !date.isAfter(end);
+      case _DateRangeFilter.last7Days:
+        final start = now.subtract(const Duration(days: 6));
+        return !date.isBefore(start) && !date.isAfter(now);
+      case _DateRangeFilter.currentMonth:
+        return date.year == now.year && date.month == now.month;
+      case _DateRangeFilter.lastMonth:
+        final previous = DateTime(now.year, now.month - 1, 1);
+        return date.year == previous.year && date.month == previous.month;
+    }
+  }
+
+  int _compareOrdersNewestFirst(dynamic a, dynamic b) {
+    final aDate = _parseOrderCreatedAt(a);
+    final bDate = _parseOrderCreatedAt(b);
+    if (aDate != null && bDate != null) return bDate.compareTo(aDate);
+    if (aDate != null) return -1;
+    if (bDate != null) return 1;
+    return _getOrderLabel(b).compareTo(_getOrderLabel(a));
+  }
+
   bool _isWithinLastDays(DateTime dt, int days) {
     if (days <= 0) return false;
-    final end = _dateOnly(DateTime.now());
-    final start = _dateOnly(DateTime.now().subtract(Duration(days: days - 1)));
+    final now = IndiaTime.now();
+    final end = _dateOnly(now);
+    final start = _dateOnly(now.subtract(Duration(days: days - 1)));
     return !dt.isBefore(start) && !dt.isAfter(end);
   }
 
@@ -1620,53 +1812,27 @@ class _OrdersHistoryTabState extends State<OrdersHistoryTab>
         return "paid";
       case _OrderStatusFilter.pending:
         return "unpaid";
+      case _OrderStatusFilter.cancelled:
+        return "cancelled";
       case _OrderStatusFilter.all:
         return "";
     }
   }
 
   DateTime? _parseOrderCreatedAt(dynamic o) {
-    final raw = o["created_at"] ??
+    final raw = o["date_time_formatted"] ??
+        o["dateTimeFormatted"] ??
+        o["formatted_date_time"] ??
+        o["formattedDateTime"] ??
+        o["date_time"] ??
+        o["dateTime"] ??
+        o["created_at"] ??
         o["order_date"] ??
         o["date"] ??
         o["createdAt"] ??
         o["placed_at"] ??
         o["order_time"];
-    if (raw == null) return null;
-    try {
-      if (raw is int) {
-        final parsed = raw > 1000000000000
-            ? DateTime.fromMillisecondsSinceEpoch(raw)
-            : DateTime.fromMillisecondsSinceEpoch(raw * 1000);
-        return parsed.toLocal();
-      }
-      if (raw is String) {
-        final trimmed = raw.trim();
-        final parsed = DateTime.tryParse(trimmed);
-        if (parsed != null) return parsed.toLocal();
-        const patterns = [
-          'yyyy-MM-dd HH:mm:ss',
-          'yyyy-MM-dd HH:mm',
-          'yyyy-MM-dd hh:mm a',
-          'dd MMM yyyy, hh:mm a',
-          'dd MMM yyyy, HH:mm',
-          'dd/MM/yyyy HH:mm',
-          'MMM dd, yyyy hh:mm a',
-          'MMMM dd, yyyy hh:mm a',
-        ];
-        for (final p in patterns) {
-          try {
-            return DateFormat(p).parse(trimmed, true).toLocal();
-          } catch (_) {}
-        }
-        if (trimmed.contains(' ') && !trimmed.contains('T')) {
-          final normalized = trimmed.replaceFirst(' ', 'T');
-          final alt = DateTime.tryParse(normalized);
-          if (alt != null) return alt.toLocal();
-        }
-      }
-    } catch (_) {}
-    return null;
+    return IndiaTime.parseDateValue(raw);
   }
 
   int _getOrderPk(dynamic o) {
@@ -1712,21 +1878,202 @@ class _OrdersHistoryTabState extends State<OrdersHistoryTab>
 
   List _extractOrders(dynamic data) {
     if (data is List) return data;
-    if (data is Map) {
-      final direct = data["orders"];
-      if (direct is List) return direct;
-      if (direct is Map && direct["data"] is List) return direct["data"];
-      final d = data["data"];
-      if (d is List) return d;
-      if (d is Map) {
-        final dOrders = d["orders"];
-        if (dOrders is List) return dOrders;
-        if (dOrders is Map && dOrders["data"] is List) return dOrders["data"];
-        if (d["data"] is List) return d["data"];
-        if (d["items"] is List) return d["items"];
+    if (data is! Map) return [];
+
+    final map = data.map((key, value) => MapEntry("$key", value));
+    for (final key in const [
+      "orders",
+      "recent_orders",
+      "recentOrders",
+      "data",
+      "items",
+      "results",
+      "payload",
+      "result",
+    ]) {
+      final value = map[key];
+      if (value is List) return value;
+      if (value is Map) {
+        final nested = _extractOrders(value);
+        if (nested.isNotEmpty) return nested;
       }
     }
     return [];
+  }
+
+  Future<List> _withCancelledOrders(
+    Map<String, dynamic> body,
+    List rawOrders,
+  ) async {
+    final cancelledOrders = await _fetchCancelledOrders(body);
+    return _mergeUniqueOrders(rawOrders, cancelledOrders);
+  }
+
+  Future<List> _fetchCancelledOrders(Map<String, dynamic> body) async {
+    var merged = <dynamic>[];
+    for (final status in const ["cancelled", "canceled"]) {
+      try {
+        final res = await AdminApi().getOrders({...body, "status": status});
+        final cancelledOrders = _extractOrders(res.data);
+        if (cancelledOrders.isEmpty) continue;
+        merged = _mergeUniqueOrders(merged, cancelledOrders);
+        kioskLog(
+          "Order history loaded ${cancelledOrders.length} $status orders",
+          tag: "ORDER_HISTORY",
+        );
+      } catch (e) {
+        kioskLog(
+          "Order history $status fetch skipped: $e",
+          tag: "ORDER_HISTORY",
+        );
+      }
+    }
+    return merged;
+  }
+
+  List _mergeUniqueOrders(List first, List second) {
+    final seen = <String>{};
+    final merged = <dynamic>[];
+    for (final order in [...first, ...second]) {
+      final key = _orderMergeKey(order);
+      if (seen.add(key)) merged.add(order);
+    }
+    return merged;
+  }
+
+  String _orderMergeKey(dynamic order) {
+    if (order is Map) {
+      for (final key in const [
+        "order_number",
+        "order_no",
+        "invoice_number",
+        "number",
+      ]) {
+        final value = order[key]?.toString().trim();
+        if (value != null &&
+            value.isNotEmpty &&
+            value.toLowerCase() != "null") {
+          return "number:$value";
+        }
+      }
+      for (final key in const ["id", "order_id", "order_pk", "orderId"]) {
+        final value = order[key]?.toString().trim();
+        if (value != null && value.isNotEmpty && value != "0") {
+          return "id:$value";
+        }
+      }
+    }
+    return "identity:${identityHashCode(order)}";
+  }
+
+  bool _belongsToThisMachine(
+    dynamic order,
+    _MachineOrderScope scope, {
+    required bool enforceMachineMetadata,
+  }) {
+    if (order is! Map) return true;
+
+    final values = _readNestedValues(order, const [
+      "terminal_id",
+      "terminalId",
+      "kiosk_terminal_id",
+      "kioskTerminalId",
+      "device_id",
+      "deviceId",
+      "device_uuid",
+      "deviceUuid",
+      "terminal_uuid",
+      "terminalUuid",
+      "kiosk_id",
+      "kioskId",
+      "terminal_name",
+      "terminalName",
+      "kiosk_name",
+      "kioskName",
+    ]).map((value) => value.toString().trim().toLowerCase()).toList();
+
+    final hasMachineMetadata = values.isNotEmpty;
+    if (values.any(scope.matches)) return true;
+
+    final sourceValues = _readNestedValues(order, const [
+      "source",
+      "order_source",
+      "orderSource",
+      "channel",
+      "sales_channel",
+      "salesChannel",
+      "platform",
+      "created_from",
+      "createdFrom",
+      "origin",
+    ]).map((value) => value.toString().trim().toLowerCase()).toList();
+
+    final hasKioskSource = sourceValues.any(_isKioskSource);
+    final hasPosSource = sourceValues.any(_isPosSource);
+
+    if (hasMachineMetadata) return false;
+    if (hasKioskSource && !hasPosSource) return true;
+    if (hasPosSource) return false;
+
+    return !enforceMachineMetadata;
+  }
+
+  bool _hasOrderOriginMetadata(dynamic order) {
+    if (order is! Map) return false;
+    final machineValues = _readNestedValues(order, const [
+      "terminal_id",
+      "terminalId",
+      "kiosk_terminal_id",
+      "kioskTerminalId",
+      "device_id",
+      "deviceId",
+      "device_uuid",
+      "deviceUuid",
+      "terminal_uuid",
+      "terminalUuid",
+      "kiosk_id",
+      "kioskId",
+      "terminal_name",
+      "terminalName",
+      "kiosk_name",
+      "kioskName",
+    ]);
+    if (machineValues.isNotEmpty) return true;
+    return _readNestedValues(order, const [
+      "source",
+      "order_source",
+      "orderSource",
+      "channel",
+      "sales_channel",
+      "salesChannel",
+      "platform",
+      "created_from",
+      "createdFrom",
+      "origin",
+    ]).isNotEmpty;
+  }
+
+  bool _isKioskSource(String value) {
+    if (value.isEmpty) return false;
+    return value == "kiosk" ||
+        value == "selfx" ||
+        value == "self_order" ||
+        value == "self-order" ||
+        value.contains("kiosk") ||
+        value.contains("self order") ||
+        value.contains("self_order");
+  }
+
+  bool _isPosSource(String value) {
+    if (value.isEmpty) return false;
+    return value == "pos" ||
+        value == "counter" ||
+        value == "cashier" ||
+        value == "staff" ||
+        value.contains("point of sale") ||
+        value.contains("pos") ||
+        value.contains("cashier") ||
+        value.contains("staff");
   }
 
   String _getOrderLabel(dynamic o) {
@@ -1739,21 +2086,143 @@ class _OrdersHistoryTabState extends State<OrdersHistoryTab>
   }
 
   String _getPaymentMode(dynamic o) {
-    final mode = o["payment_mode"] ??
-        o["paymentMethod"] ??
-        o["payment_method"] ??
-        o["payment_status"] ??
+    final mode = _readNestedValue(o, const [
+          "payment_mode",
+          "paymentMode",
+          "payment_method",
+          "paymentMethod",
+          "gateway",
+          "provider",
+          "method",
+        ]) ??
         "";
     return mode.toString().trim();
   }
 
   String _getStatus(dynamic o) {
-    final status = o["status"] ??
-        o["order_status"] ??
-        o["payment_status"] ??
-        o["state"] ??
-        "";
-    return status.toString().trim();
+    final paymentStatuses = _readNestedValues(o, const [
+      "payment_status",
+      "paymentStatus",
+      "payment_state",
+      "paymentState",
+      "transaction_status",
+      "transactionStatus",
+    ]).map((value) => value.toString().trim()).toList();
+    final paymentStatus =
+        paymentStatuses.isNotEmpty ? paymentStatuses.first : null;
+    final orderStatus = _readNestedValue(o, const [
+      "status",
+      "order_status",
+      "orderStatus",
+      "state",
+    ])?.toString().trim();
+    final paidFlags = _readNestedBools(o, const [
+      "paid",
+      "is_paid",
+      "isPaid",
+      "payment_success",
+      "paymentSuccess",
+      "success",
+    ]);
+
+    if (_isCancelledStatus(orderStatus ?? "")) return "cancelled";
+    if (paymentStatuses.any(_isCancelledStatus)) return "cancelled";
+    if (paidFlags.contains(true) || paymentStatuses.any(_isPaidStatus)) {
+      return "successful";
+    }
+    if (paymentStatuses.any(_isFailedStatus)) return "failed";
+    if (_isPaidStatus(orderStatus ?? "")) return "successful";
+    if (_isFailedStatus(orderStatus ?? "")) return "failed";
+    if (_isPendingStatus(paymentStatus ?? "")) return "pending";
+    if (_isPendingStatus(orderStatus ?? "")) return "pending";
+
+    final fallback = (paymentStatus?.isNotEmpty == true
+            ? paymentStatus
+            : orderStatus?.isNotEmpty == true
+                ? orderStatus
+                : "pending") ??
+        "pending";
+    return fallback.toLowerCase().replaceAll(" ", "_");
+  }
+
+  String _getStatusLabel(String status) {
+    final normalized = status.toLowerCase().replaceAll("_", " ").trim();
+    if (_isPaidStatus(normalized)) return "Successful";
+    if (_isCancelledStatus(normalized)) return "Cancelled";
+    if (_isFailedStatus(normalized)) return "Failed";
+    if (_isPendingStatus(normalized)) return "Pending";
+    if (normalized.isEmpty) return "Pending";
+    return normalized
+        .split(RegExp(r"\s+"))
+        .where((part) => part.isNotEmpty)
+        .map((part) => "${part[0].toUpperCase()}${part.substring(1)}")
+        .join(" ");
+  }
+
+  dynamic _readNestedValue(dynamic value, List<String> keys, {int depth = 4}) {
+    final values = _readNestedValues(value, keys, depth: depth);
+    return values.isEmpty ? null : values.first;
+  }
+
+  List<dynamic> _readNestedValues(
+    dynamic value,
+    List<String> keys, {
+    int depth = 4,
+  }) {
+    final results = <dynamic>[];
+    void collect(dynamic current, int remainingDepth) {
+      if (current == null || remainingDepth <= 0) return;
+      if (current is Map) {
+        for (final key in keys) {
+          if (current.containsKey(key)) {
+            final direct = current[key];
+            if (direct != null && direct.toString().trim().isNotEmpty) {
+              results.add(direct);
+            }
+          }
+        }
+        for (final key in const [
+          "payment",
+          "transaction",
+          "order",
+          "data",
+          "details",
+        ]) {
+          collect(current[key], remainingDepth - 1);
+        }
+      } else if (current is Iterable) {
+        for (final item in current) {
+          collect(item, remainingDepth - 1);
+        }
+      }
+    }
+
+    collect(value, depth);
+    return results;
+  }
+
+  List<bool> _readNestedBools(dynamic value, List<String> keys,
+      {int depth = 4}) {
+    return _readNestedValues(value, keys, depth: depth)
+        .map(_toBoolValue)
+        .whereType<bool>()
+        .toList();
+  }
+
+  bool? _toBoolValue(dynamic raw) {
+    if (raw is bool) return raw;
+    if (raw is num) return raw != 0;
+    final text = raw?.toString().trim().toLowerCase();
+    if (text == null || text.isEmpty) return null;
+    if (const {"1", "true", "yes", "y", "paid", "success", "successful"}
+        .contains(text)) {
+      return true;
+    }
+    if (const {"0", "false", "no", "n", "pending", "unpaid", "failed"}
+        .contains(text)) {
+      return false;
+    }
+    return null;
   }
 
   double _getAmount(dynamic o) {
@@ -1767,26 +2236,9 @@ class _OrdersHistoryTabState extends State<OrdersHistoryTab>
   }
 
   String _formatOrderDate(dynamic o) {
-    final raw = o["created_at"] ??
-        o["order_date"] ??
-        o["date"] ??
-        o["createdAt"] ??
-        o["placed_at"] ??
-        o["order_time"];
-    if (raw == null) return "N/A";
-    try {
-      if (raw is int) {
-        final dt = raw > 1000000000000
-            ? DateTime.fromMillisecondsSinceEpoch(raw)
-            : DateTime.fromMillisecondsSinceEpoch(raw * 1000);
-        return DateFormat('dd MMM yyyy, hh:mm a').format(dt.toLocal());
-      }
-      if (raw is String) {
-        final dt = DateTime.parse(raw);
-        return DateFormat('dd MMM yyyy, hh:mm a').format(dt.toLocal());
-      }
-    } catch (_) {}
-    return raw.toString();
+    final dt = _parseOrderCreatedAt(o);
+    if (dt == null) return "N/A";
+    return IndiaTime.formatWall(dt, 'dd MMM yyyy, hh:mm a');
   }
 
   String _getTxnId(dynamic o) {
@@ -2041,11 +2493,75 @@ class _OrdersHistoryTabState extends State<OrdersHistoryTab>
     return s.contains("paid") ||
         s.contains("completed") ||
         s.contains("success") ||
-        s.contains("successful");
+        s.contains("successful") ||
+        s.contains("captured") ||
+        s.contains("settled");
+  }
+
+  bool _isFailedStatus(String status) {
+    final s = status.toLowerCase();
+    if (s.isEmpty) return false;
+    return s.contains("failed") ||
+        s.contains("failure") ||
+        s.contains("declined") ||
+        s.contains("expired") ||
+        s.contains("void") ||
+        s.contains("refund");
+  }
+
+  bool _isCancelledStatus(String status) {
+    final s = status.toLowerCase();
+    if (s.isEmpty) return false;
+    return s.contains("cancel");
   }
 }
 
-enum _OrderStatusFilter { all, paid, pending }
+enum _OrderStatusFilter { all, paid, pending, cancelled }
+
+class _MachineOrderScope {
+  final String? terminalId;
+  final String? deviceUuid;
+  final String? deviceId;
+  final String? kioskName;
+
+  const _MachineOrderScope({
+    this.terminalId,
+    this.deviceUuid,
+    this.deviceId,
+    this.kioskName,
+  });
+
+  factory _MachineOrderScope.fromPrefs(SharedPreferences prefs) {
+    String? read(String key) {
+      String? value;
+      try {
+        value = prefs.get(key)?.toString().trim();
+      } catch (_) {
+        value = null;
+      }
+      return value == null || value.isEmpty ? null : value;
+    }
+
+    return _MachineOrderScope(
+      terminalId: read("terminal_id") ?? read("kiosk_terminal_id"),
+      deviceUuid: read("device_uuid"),
+      deviceId: read("device_id"),
+      kioskName: read("kiosk_name"),
+    );
+  }
+
+  String get cacheKey =>
+      "${terminalId ?? ''}|${deviceUuid ?? ''}|${deviceId ?? ''}|${kioskName ?? ''}";
+
+  bool matches(String value) {
+    final normalized = value.trim().toLowerCase();
+    if (normalized.isEmpty) return false;
+    return normalized == terminalId?.toLowerCase() ||
+        normalized == deviceUuid?.toLowerCase() ||
+        normalized == deviceId?.toLowerCase() ||
+        normalized == kioskName?.toLowerCase();
+  }
+}
 
 enum _DateRangeFilter {
   today,

@@ -8,11 +8,16 @@ import java.util.Map;
 import android.app.PendingIntent;
 import android.content.Context;
 import android.content.Intent;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
+import android.graphics.Canvas;
+import android.graphics.Color;
 import android.hardware.usb.UsbConstants;
 import android.hardware.usb.UsbDevice;
 import android.hardware.usb.UsbEndpoint;
 import android.hardware.usb.UsbInterface;
 import android.hardware.usb.UsbManager;
+import android.util.Base64;
 import android.util.Log;
 
 import com.csnprintersdk.csnio.CSNUSBPrinting;
@@ -129,7 +134,7 @@ public class EpsonUSBPrinter {
     }
 
     private UsbDevice findDevice(Integer deviceId, Integer vendorId, Integer productId) {
-        HashMap<String, UsbDevice> deviceList = this.manager.getDeviceL ist();
+        HashMap<String, UsbDevice> deviceList = this.manager.getDeviceList();
         if (deviceId != null) {
             for (UsbDevice device : deviceList.values()) {
                 if (deviceId == device.getDeviceId()) {
@@ -221,15 +226,140 @@ public class EpsonUSBPrinter {
         this.mPos.POS_TextOut(text, nLan, nOrgx, nWidthTimes, nHeightTimes, nFontType, nFontStyle);
     }
 
+    private void printTextLine(String text, int nLan, int nOrgx, int nWidthTimes, int nHeightTimes, int nFontType, int nFontStyle) throws Exception {
+        String value = text == null ? "" : text;
+        this.mPos.POS_TextOut(value, nLan, nOrgx, nWidthTimes, nHeightTimes, nFontType, nFontStyle);
+    }
+
+    private void feedOneLine() throws Exception {
+        this.mPos.POS_TextOut("\r\n", 0, 0, 0, 0, 0, 0);
+    }
+
+    private void safeCut(boolean halfCut) throws Exception {
+        feedOneLine();
+        feedOneLine();
+        try {
+            if (halfCut) {
+                this.mPos.POS_HalfCutPaper();
+            } else {
+                this.mPos.POS_FullCutPaper();
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "Cut command ignored; printer may not support cutter", e);
+        }
+    }
+
+    private int clampInt(int value, int min, int max) {
+        return Math.max(min, Math.min(max, value));
+    }
+
+    private int qrErrorLevel(JSONObject command, JSONObject options) {
+        Object raw = null;
+        if (command.has("errorLevel")) {
+            raw = command.opt("errorLevel");
+        } else if (command.has("error_level")) {
+            raw = command.opt("error_level");
+        } else if (options != null && options.has("errorLevel")) {
+            raw = options.opt("errorLevel");
+        }
+
+        if (raw instanceof Number) {
+            return clampInt(((Number) raw).intValue(), 0, 3);
+        }
+
+        String value = raw == null ? "" : raw.toString().trim().toLowerCase();
+        if ("l".equals(value) || "low".equals(value)) {
+            return 0;
+        }
+        if ("q".equals(value)) {
+            return 2;
+        }
+        if ("h".equals(value) || "high".equals(value)) {
+            return 3;
+        }
+        if (!value.isEmpty()) {
+            try {
+                return clampInt(Integer.parseInt(value), 0, 3);
+            } catch (NumberFormatException ignored) {
+            }
+        }
+        return 1;
+    }
+
+    private void printQrCode(String data, int align, int size, int errorLevel) throws Exception {
+        String value = cleanQrData(data);
+        if (value.isEmpty()) {
+            return;
+        }
+
+        int moduleSize = clampInt(size, 3, 8);
+        int ecc = clampInt(errorLevel, 0, 3);
+        this.mPos.POS_S_Align(align);
+
+        boolean printed = false;
+        try {
+            printed = this.mPos.POS_S_SetQRcode(value, moduleSize, ecc, 0);
+        } catch (Exception e) {
+            Log.w(TAG, "POS_S_SetQRcode failed, trying EPSON QR command", e);
+        }
+
+        if (!printed) {
+            try {
+                printed = this.mPos.POS_EPSON_SetQRCode(value, moduleSize, ecc);
+            } catch (Exception e) {
+                Log.w(TAG, "POS_EPSON_SetQRCode failed, printing QR payload as text", e);
+            }
+        }
+
+        if (!printed) {
+            printTextLine(value, 0, 0, 0, 0, 0, 0);
+        }
+        feedOneLine();
+    }
+
+    private String cleanQrData(String data) {
+        if (data == null) {
+            return "";
+        }
+        String value = data.trim()
+                .replace("\\/", "/")
+                .replace("\r", "")
+                .replace("\n", "")
+                .replace("\t", "");
+        if (value.length() >= 2) {
+            boolean doubleQuoted = value.startsWith("\"") && value.endsWith("\"");
+            boolean singleQuoted = value.startsWith("'") && value.endsWith("'");
+            if (doubleQuoted || singleQuoted) {
+                value = value.substring(1, value.length() - 1).trim();
+            }
+        }
+        return value;
+    }
+
+    private Bitmap centerBitmapOnPaper(Bitmap source, int imageWidth, int paperWidth) {
+        if (source == null) {
+            return null;
+        }
+        int targetWidth = clampInt(imageWidth, 1, paperWidth);
+        int targetHeight = Math.max(1, Math.round(source.getHeight() * (targetWidth / (float) source.getWidth())));
+        Bitmap scaled = Bitmap.createScaledBitmap(source, targetWidth, targetHeight, true);
+        Bitmap canvasBitmap = Bitmap.createBitmap(paperWidth, targetHeight, Bitmap.Config.ARGB_8888);
+        Canvas canvas = new Canvas(canvasBitmap);
+        canvas.drawColor(Color.WHITE);
+        int left = Math.max(0, (paperWidth - targetWidth) / 2);
+        canvas.drawBitmap(scaled, left, 0, null);
+        if (scaled != source) {
+            scaled.recycle();
+        }
+        return canvasBitmap;
+    }
+
     public void POS_HalfCutPaper() throws Exception {
         this.mPos.POS_FeedLine();
-        this.mPos.POS_FeedLine();
         this.mPos.POS_HalfCutPaper();
-        this.mPos.POS_FeedLine();
-        this.mPos.POS_FeedLine();
         try {
             Thread.currentThread();
-            Thread.sleep(4000);
+            Thread.sleep(500);
         } catch (InterruptedException e) {
             e.printStackTrace();
         }
@@ -237,13 +367,10 @@ public class EpsonUSBPrinter {
 
     public void POS_FullCutPaper() throws Exception {
         this.mPos.POS_FeedLine();
-        this.mPos.POS_FeedLine();
         this.mPos.POS_FullCutPaper();
-        this.mPos.POS_FeedLine();
-        this.mPos.POS_FeedLine();
         try {
             Thread.currentThread();
-            Thread.sleep(4000);
+            Thread.sleep(500);
         } catch (InterruptedException e) {
             e.printStackTrace();
         }
@@ -257,6 +384,7 @@ public class EpsonUSBPrinter {
     public void print(String printObject, int lineFeed, Integer deviceId, Integer vendorId, Integer productId) throws Exception {
         ensureConnected(deviceId, vendorId, productId);
 
+        this.mPos.POS_Reset();
         JSONArray resObj = new JSONArray(printObject);
         for (int i = 0; i < resObj.length(); i++) {
             JSONObject jsonobject = resObj.getJSONObject(i);
@@ -276,19 +404,86 @@ public class EpsonUSBPrinter {
                     if (options.has("align")) {
                         this.mPos.POS_S_Align(align);
                     }
-                    this.mPos.POS_TextOut(text, nLan, nOrgx, widthTimes, heightTimes, fontType, fontStyle);
+                    printTextLine(text, nLan, nOrgx, widthTimes, heightTimes, fontType, fontStyle);
                     break;
                 case "dottedLine":
-                    this.mPos.POS_TextOut("--------------------------------\r\n", 0, 0, 0, 0, 0, 0);
+                    this.mPos.POS_S_Align(0);
+                    printTextLine("------------------------------", 0, 0, 0, 0, 0, 0);
+                    feedOneLine();
+                    break;
+                case "image":
+                    JSONObject imageOptions = jsonobject.optJSONObject("options");
+                    int imageAlign = imageOptions != null && imageOptions.has("align") ? imageOptions.getInt("align") : 1;
+                    int imageWidth = jsonobject.has("max_width_dots") ? jsonobject.getInt("max_width_dots") : 192;
+                    int paperWidth = jsonobject.has("paper_width_dots") ? jsonobject.getInt("paper_width_dots") : 0;
+                    String base64 = jsonobject.optString("base64", "");
+                    if (!base64.isEmpty()) {
+                        byte[] bytes = Base64.decode(base64, Base64.DEFAULT);
+                        Bitmap bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.length);
+                        if (bitmap != null) {
+                            if (imageAlign == 1 && paperWidth > imageWidth) {
+                                Bitmap centered = centerBitmapOnPaper(bitmap, imageWidth, paperWidth);
+                                this.mPos.POS_S_Align(0);
+                                this.mPos.POS_PrintPicture(centered, paperWidth, 0, 0);
+                                centered.recycle();
+                            } else {
+                                this.mPos.POS_S_Align(imageAlign);
+                                this.mPos.POS_PrintPicture(bitmap, imageWidth, 0, 0);
+                            }
+                            feedOneLine();
+                            bitmap.recycle();
+                        }
+                    }
+                    break;
+                case "qr":
+                case "qrcode":
+                case "qr_code":
+                    JSONObject qrOptions = jsonobject.optJSONObject("options");
+                    int qrAlign = qrOptions != null && qrOptions.has("align") ? qrOptions.getInt("align") : 1;
+                    int qrSize = jsonobject.has("size")
+                            ? jsonobject.getInt("size")
+                            : (qrOptions != null && qrOptions.has("size") ? qrOptions.getInt("size") : 5);
+                    String qrData = jsonobject.optString("data", "");
+                    if (qrData.trim().isEmpty()) {
+                        qrData = jsonobject.optString("text", "");
+                    }
+                    if (qrData.trim().isEmpty()) {
+                        qrData = jsonobject.optString("value", "");
+                    }
+                    if (qrData.trim().isEmpty()) {
+                        qrData = jsonobject.optString("payload", "");
+                    }
+                    if (qrData.trim().isEmpty()) {
+                        qrData = jsonobject.optString("url", "");
+                    }
+                    if (qrData.trim().isEmpty()) {
+                        qrData = jsonobject.optString("qr_url", "");
+                    }
+                    if (qrData.trim().isEmpty()) {
+                        qrData = jsonobject.optString("qrUrl", "");
+                    }
+                    if (qrData.trim().isEmpty()) {
+                        qrData = jsonobject.optString("tracking_url", "");
+                    }
+                    if (qrData.trim().isEmpty()) {
+                        qrData = jsonobject.optString("trackingUrl", "");
+                    }
+                    if (qrData.trim().isEmpty()) {
+                        qrData = jsonobject.optString("payment_url", "");
+                    }
+                    if (qrData.trim().isEmpty()) {
+                        qrData = jsonobject.optString("paymentUrl", "");
+                    }
+                    printQrCode(qrData, qrAlign, qrSize, qrErrorLevel(jsonobject, qrOptions));
                     break;
                 case "feedLine":
-                    this.mPos.POS_FeedLine();
+                    feedOneLine();
                     break;
                 case "halfCutPaper":
-                    this.mPos.POS_HalfCutPaper();
+                    safeCut(true);
                     break;
                 case "fullCutPaper":
-                    this.mPos.POS_FullCutPaper();
+                    safeCut(false);
                     break;
                 default:
                     break;
@@ -296,7 +491,7 @@ public class EpsonUSBPrinter {
         }
 
         for (int i = 0; i < lineFeed; i++) {
-            this.mPos.POS_FeedLine();
+            feedOneLine();
         }
         // List<EpsonUSBPrinterLineEntry> printObjectList = this.objectMapper.readValue(printObject, new TypeReference<>() {});
         // Toast.makeText(this.context, "Print started", Toast.LENGTH_LONG).show();

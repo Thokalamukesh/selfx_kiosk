@@ -195,7 +195,6 @@ class PrinterManager private constructor(context: Context) {
                 if (connected) {
                     updateState(State.CONNECTED, "Printer connected")
                     emitConnected(deviceInfo)
-                    autoTestPrint(deviceId, vendorId, productId)
                 } else {
                     updateState(State.ERROR, "Printer connection failed")
                 }

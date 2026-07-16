@@ -1,11 +1,12 @@
 import 'dart:convert';
 import 'package:flutter/material.dart';
-import 'package:api_selfxo_project/api/dio_client.dart';
 import 'package:api_selfxo_project/api/admin_api.dart';
 import 'package:api_selfxo_project/api/kiosk_api.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:api_selfxo_project/background_image/background_image.dart';
+import 'package:api_selfxo_project/core/image_url.dart';
 import 'package:api_selfxo_project/core/kiosk_memory_service.dart';
+import 'package:api_selfxo_project/widget/app_network_image.dart';
 
 class ProductsTab extends StatefulWidget {
   final VoidCallback onProductsUpdated;
@@ -80,8 +81,7 @@ class _ProductsTabState extends State<ProductsTab> {
     setState(() => loading = true);
 
     try {
-      final dio = await DioClient.getAdminDio();
-      final res = await dio.get("admin/items");
+      final res = await AdminApi().getItems();
 
       final List items = res.data["items"] ?? res.data["data"] ?? [];
       groupedProducts.clear();
@@ -109,13 +109,14 @@ class _ProductsTabState extends State<ProductsTab> {
           }
         }
 
-        final directImage = item["item_photo_url"] ?? item["image"];
+        final directImage = firstImageValueFromMap(item);
         if (directImage == null || directImage.toString().trim().isEmpty) {
-          final nestedImage =
-              nestedMap?["item_photo_url"] ?? nestedMap?["image"];
+          final nestedImage = firstImageValueFromMap(nestedMap);
           if (nestedImage != null && nestedImage.toString().trim().isNotEmpty) {
             item["item_photo_url"] = nestedImage;
           }
+        } else {
+          item["item_photo_url"] = directImage;
         }
 
         if (item["type"] == null && nestedMap?["type"] != null) {
@@ -138,6 +139,7 @@ class _ProductsTabState extends State<ProductsTab> {
         }
 
         _applyLocalOverride(item);
+        _writeAvailabilityFields(item, _isProductAvailable(item));
         final category = item["category_name"] ?? "Uncategorized";
         groupedProducts.putIfAbsent(category, () => []);
         groupedProducts[category]!.add(item);
@@ -220,6 +222,82 @@ class _ProductsTabState extends State<ProductsTab> {
     return int.tryParse(raw.toString());
   }
 
+  dynamic _readProductStatus(Map? item) {
+    if (item == null) return null;
+    for (final key in const [
+      "is_available",
+      "isAvailable",
+      "available",
+      "enabled",
+      "status",
+      "item_status",
+      "itemStatus",
+      "active",
+      "is_active",
+      "isActive",
+    ]) {
+      if (item.containsKey(key)) return item[key];
+    }
+    final nested = item["item"];
+    if (nested is Map) return _readProductStatus(nested);
+    return null;
+  }
+
+  bool _statusToAvailable(dynamic value, {bool fallback = true}) {
+    if (value == null) return fallback;
+    if (value is bool) return value;
+    if (value is num) return value != 0;
+    final text = value.toString().trim().toLowerCase();
+    if (text.isEmpty) return fallback;
+    if (text == "0" ||
+        text == "false" ||
+        text == "no" ||
+        text == "n" ||
+        text == "off" ||
+        text == "inactive" ||
+        text == "disabled" ||
+        text == "hidden" ||
+        text == "unavailable" ||
+        text == "not_available" ||
+        text == "not available" ||
+        text == "out_of_stock" ||
+        text == "out of stock") {
+      return false;
+    }
+    if (text == "1" ||
+        text == "true" ||
+        text == "yes" ||
+        text == "y" ||
+        text == "on" ||
+        text == "active" ||
+        text == "enabled" ||
+        text == "available" ||
+        text == "in_stock" ||
+        text == "in stock") {
+      return true;
+    }
+    final parsed = num.tryParse(text);
+    if (parsed != null) return parsed != 0;
+    return fallback;
+  }
+
+  bool _isProductAvailable(Map<String, dynamic> item) {
+    return _statusToAvailable(_readProductStatus(item), fallback: true);
+  }
+
+  void _writeAvailabilityFields(Map<String, dynamic> item, bool available) {
+    final status = available ? 1 : 0;
+    item["is_available"] = status;
+    item["isAvailable"] = status;
+    item["available"] = status;
+    final nested = item["item"];
+    if (nested is Map) {
+      nested["is_available"] = status;
+      nested["isAvailable"] = status;
+      nested["available"] = status;
+    }
+  }
+
   int? _extractCreatedItemId(dynamic data) {
     if (data == null) return null;
     if (data is Map) {
@@ -300,12 +378,19 @@ class _ProductsTabState extends State<ProductsTab> {
     if (id == null) return;
     final override = _localOverrides[id];
     if (override == null) return;
+    final backendStatus = _readProductStatus(item);
     item.addAll(override);
     final nested = item["item"];
     if (nested is Map) {
       for (final entry in override.entries) {
         nested[entry.key] = entry.value;
       }
+    }
+    if (backendStatus != null) {
+      _writeAvailabilityFields(
+        item,
+        _statusToAvailable(backendStatus, fallback: true),
+      );
     }
   }
 
@@ -1805,25 +1890,29 @@ class _ProductsTabState extends State<ProductsTab> {
   // ================= UPDATE STATUS =================
   Future<void> _updateAvailability(int? id, bool available) async {
     if (id == null) return;
-    final status = available ? 1 : 0;
-    setState(() {
+    final previousStates = <Map<String, dynamic>, bool>{};
+    void applyLocal(bool value) {
       groupedProducts.forEach((_, list) {
-        final idx = list.indexWhere((p) => _itemId(p) == id);
-        if (idx != -1) {
-          list[idx]["is_available"] = status;
-          list[idx]["isAvailable"] = status;
-          list[idx]["available"] = status;
+        for (final item in list) {
+          if (_itemId(item) != id) continue;
+          previousStates.putIfAbsent(item, () => _isProductAvailable(item));
+          _writeAvailabilityFields(item, value);
         }
       });
-      _applySearch();
+    }
+
+    setState(() {
+      applyLocal(available);
     });
+    _applySearch();
 
     try {
-      final dio = await DioClient.getAdminDio();
-      await dio.put(
-        "admin/item/update/$id",
-        data: {"is_available": status},
-      );
+      try {
+        await AdminApi().updateItem(id.toString(), {"is_available": available});
+      } catch (_) {
+        await AdminApi().toggleItem(id.toString());
+      }
+      final status = available ? 1 : 0;
       _localOverrides[id] = {
         ...?_localOverrides[id],
         "id": id,
@@ -1844,7 +1933,19 @@ class _ProductsTabState extends State<ProductsTab> {
       KioskMemoryService.instance.mediaRefreshTick.value++;
       widget.onProductsUpdated();
     } catch (e) {
-      _loadProducts();
+      if (!mounted) return;
+      setState(() {
+        previousStates.forEach((item, wasAvailable) {
+          _writeAvailabilityFields(item, wasAvailable);
+        });
+      });
+      _applySearch();
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text("Failed to update product status"),
+          backgroundColor: Colors.red,
+        ),
+      );
     }
   }
 
@@ -2025,8 +2126,8 @@ class _ProductsTabState extends State<ProductsTab> {
   }
 
   Widget _productCard(Map<String, dynamic> p) {
-    final bool isActive = p["is_available"] == 1;
-    final String? imageUrl = p["item_photo_url"];
+    final bool isActive = _isProductAvailable(p);
+    final String imageUrl = firstImageUrlFromMap(p);
     final String type = (p["type"] ?? "veg").toString();
     final num parcelCharge =
         num.tryParse((p["take_away_charge"] ?? "0").toString()) ?? 0;
@@ -2069,7 +2170,7 @@ class _ProductsTabState extends State<ProductsTab> {
                             Colors.grey,
                             BlendMode.saturation,
                           ),
-                    child: imageUrl != null && imageUrl.isNotEmpty
+                    child: imageUrl.isNotEmpty
                         ? LayoutBuilder(
                             builder: (context, constraints) {
                               final dpr =
@@ -2080,12 +2181,12 @@ class _ProductsTabState extends State<ProductsTab> {
                               final cacheHeight = (constraints.maxHeight * dpr)
                                   .round()
                                   .clamp(1, 4096);
-                              return Image.network(
-                                imageUrl,
+                              return AppNetworkImage(
+                                url: imageUrl,
                                 fit: BoxFit.cover,
                                 cacheWidth: cacheWidth,
                                 cacheHeight: cacheHeight,
-                                errorBuilder: (_, __, ___) => Container(
+                                fallback: Container(
                                   color: Colors.grey[100],
                                   child: const Icon(
                                     Icons.dining_sharp,

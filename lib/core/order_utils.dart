@@ -2,12 +2,12 @@ import 'package:flutter/material.dart';
 import 'package:api_selfxo_project/api/dio_client.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:intl/intl.dart';
+import 'package:api_selfxo_project/core/india_time.dart';
 import 'package:api_selfxo_project/core/kiosk_restaurant_meta.dart';
 // Adding Sunmi Imports
 import 'package:sunmi_printer_plus/enums.dart';
 import 'package:sunmi_printer_plus/sunmi_printer_plus.dart';
 import 'package:sunmi_printer_plus/sunmi_style.dart';
-import 'package:api_selfxo_project/core/kiosk_log.dart';
 
 class OrderUtils {
   static final ValueNotifier<int> infoRevision = ValueNotifier<int>(0);
@@ -27,21 +27,15 @@ class OrderUtils {
   }) async {
     try {
       final dio = await DioClient.getAdminDio();
+      final res = await dio.get(
+        "kiosk/admin/orders",
+        queryParameters: {
+          if (status.trim().isNotEmpty) "status": status,
+        },
+      );
 
-      final body = <String, dynamic>{
-        "dateRange": dateRange,
-        "status": status,
-      };
-      if (range != null) {
-        final start = _dateOnly(range.start);
-        final end = _dateOnly(range.end);
-        body["from_date"] = DateFormat('yyyy-MM-dd').format(start);
-        body["to_date"] = DateFormat('yyyy-MM-dd').format(end);
-      }
-
-      final res = await dio.post("admin/orders", data: body);
-
-      return res.data["orders"] ?? res.data["data"]?["orders"] ?? [];
+      final data = res.data;
+      return _extractOrders(data);
     } catch (e) {
       return [];
     }
@@ -79,8 +73,8 @@ class OrderUtils {
       final localDate = _parseOrderDate(o);
       if (localDate != null &&
           _checkMatch(localDate, filter, now, dateRange) &&
-          _isPaidStatus(o["status"])) {
-        total += double.tryParse(o["total"].toString()) ?? 0;
+          _isPaidOrderMap(o)) {
+        total += _orderTotal(o);
         count++;
       }
     }
@@ -109,6 +103,34 @@ class OrderUtils {
         s.contains("success") ||
         s.contains("successful") ||
         s.contains("delivered");
+  }
+
+  static bool _isPaidOrderMap(dynamic order) {
+    if (order is! Map) return false;
+    return _isPaidStatus(
+      order["payment_status"] ??
+          order["paymentStatus"] ??
+          order["status"] ??
+          order["order_status"],
+    );
+  }
+
+  static double _orderTotal(dynamic order) {
+    if (order is! Map) return 0;
+    for (final key in const [
+      "total",
+      "grand_total",
+      "grandTotal",
+      "total_amount",
+      "totalAmount",
+      "amount",
+      "payable_amount",
+      "payableAmount",
+    ]) {
+      final value = double.tryParse(order[key]?.toString() ?? "");
+      if (value != null) return value;
+    }
+    return 0;
   }
 
   // ===============================
@@ -152,10 +174,13 @@ class OrderUtils {
         "order_id": orderNumber,
         "order_pk": rawPk,
         "transaction_id": txn,
-        "total": (o["total"] ?? 0).toString(),
+        "total": _orderTotal(o).toString(),
         "items_count": (o["order_items"] as List?)?.length ?? 0,
         "time": DateFormat('hh:mm a').format(localDate),
-        "status": o["status"] ?? "pending",
+        "status": o["payment_status"] ??
+            o["paymentStatus"] ??
+            o["status"] ??
+            "pending",
         "image_url": _getFirstItemImage(o),
         "items_label": _getItemsLabel(o),
       });
@@ -175,7 +200,7 @@ class OrderUtils {
     try {
       final prefs = await SharedPreferences.getInstance();
       final dio = await DioClient.getAuthedDio();
-      final res = await dio.get("kiosks/getRestaurantData");
+      final res = await dio.get("kiosk/bootstrap");
 
       final restaurant = res.data["restaurant"];
       final kiosk = res.data["kiosk_settings"];
@@ -286,6 +311,28 @@ class OrderUtils {
     }
   }
 
+  static List _extractOrders(dynamic data) {
+    if (data is List) return data;
+    if (data is! Map) return const [];
+    final map = data.map((key, value) => MapEntry("$key", value));
+    for (final key in const [
+      "orders",
+      "recent_orders",
+      "recentOrders",
+      "data",
+      "items",
+      "results",
+    ]) {
+      final value = map[key];
+      if (value is List) return value;
+      if (value is Map) {
+        final nested = _extractOrders(value);
+        if (nested.isNotEmpty) return nested;
+      }
+    }
+    return const [];
+  }
+
   // ===============================
   // 6. 🖨 BACKEND DAILY REPORT (Original)
   // ===============================
@@ -294,18 +341,7 @@ class OrderUtils {
     required String toDate,
   }) async {
     try {
-      final prefs = await SharedPreferences.getInstance();
-      final dio = await DioClient.getAdminDio();
-
-      await dio.post(
-        "admin/kioskLog/daily-report",
-        data: {
-          "restaurant_id": prefs.getString("restaurant_id"),
-          "branch_id": prefs.getInt("branch_id"),
-          "from_date": fromDate,
-          "to_date": toDate,
-        },
-      );
+      return;
     } catch (e) {
       rethrow;
     }
@@ -332,7 +368,7 @@ class OrderUtils {
         style: SunmiStyle(bold: true, fontSize: SunmiFontSize.XL),
       );
       await SunmiPrinter.printText(
-        "Date: ${DateFormat('dd-MM-yyyy').format(DateTime.now())}",
+        "Date: ${DateFormat('dd-MM-yyyy').format(IndiaTime.now())}",
       );
       await SunmiPrinter.line();
 

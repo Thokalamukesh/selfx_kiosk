@@ -1,14 +1,9 @@
-import 'dart:async';
-
 import 'package:api_selfxo_project/background_image/background_image.dart';
 import 'package:api_selfxo_project/core/kiosk_bootstrap.dart';
-import 'package:api_selfxo_project/screens/register_screen.dart';
 import 'package:api_selfxo_project/printer/register_kiosk.dart';
+import 'package:api_selfxo_project/screens/register_screen.dart';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-
-import 'pin_screen.dart';
-import 'package:api_selfxo_project/core/kiosk_log.dart';
 
 class SplashScreen extends StatefulWidget {
   const SplashScreen({super.key});
@@ -18,7 +13,6 @@ class SplashScreen extends StatefulWidget {
 }
 
 class _SplashScreenState extends State<SplashScreen> {
-  Timer? _navDelayTimer;
   bool _initStarted = false;
   bool _didNavigate = false;
   bool _skipVisualSplash = false;
@@ -36,12 +30,15 @@ class _SplashScreenState extends State<SplashScreen> {
     _initStarted = true;
     try {
       final prefs = await SharedPreferences.getInstance();
-      final restaurantId = prefs.getString("restaurant_id");
+      final authToken = prefs.getString("auth_token")?.trim() ?? "";
       final setupDone = prefs.getBool("kiosk_setup_done") ?? false;
+      final printerConfigured =
+          (prefs.getString("printer_type")?.trim().isNotEmpty ?? false);
+      final readyForWelcome = setupDone && printerConfigured;
       if (!mounted) return;
 
       if (_didNavigate) return;
-      if (restaurantId == null || restaurantId.trim().isEmpty) {
+      if (authToken.isEmpty) {
         _didNavigate = true;
         Navigator.pushReplacement(
           context,
@@ -53,36 +50,28 @@ class _SplashScreenState extends State<SplashScreen> {
       try {
         await DeviceBootstrap.ensureDeviceReady();
       } catch (e) {
+        // Bootstrap will retry from the destination screen.
       }
 
+      if (!mounted) return;
       if (_didNavigate) return;
       _didNavigate = true;
       Navigator.pushReplacement(
         context,
         MaterialPageRoute(
-          builder: (_) =>
-              setupDone ? const WelcomeScreen() : const RegisterKioskScreen(),
+          builder: (_) => readyForWelcome
+              ? const WelcomeScreen()
+              : const RegisterKioskScreen(),
         ),
       );
     } catch (e) {
+      if (!mounted || _didNavigate) return;
+      _didNavigate = true;
+      Navigator.pushReplacement(
+        context,
+        MaterialPageRoute(builder: (_) => const UserIdScreen()),
+      );
     }
-  }
-
-  Future<void> _delay(Duration duration) {
-    final completer = Completer<void>();
-    _navDelayTimer?.cancel();
-    _navDelayTimer = Timer(duration, () {
-      if (!completer.isCompleted) {
-        completer.complete();
-      }
-    });
-    return completer.future;
-  }
-
-  @override
-  void dispose() {
-    _navDelayTimer?.cancel();
-    super.dispose();
   }
 
   @override

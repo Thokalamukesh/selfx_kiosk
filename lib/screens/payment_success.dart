@@ -8,9 +8,12 @@ import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:api_selfxo_project/background_image/background_image.dart';
+import 'package:api_selfxo_project/core/india_time.dart';
 import 'package:api_selfxo_project/core/kiosk_config.dart';
+import 'package:api_selfxo_project/core/kiosk_log.dart';
 import 'package:api_selfxo_project/core/kiosk_restaurant_meta.dart';
 import 'package:api_selfxo_project/core/kiosk_memory_service.dart';
+import 'package:api_selfxo_project/core/receipt_print_mode.dart';
 import 'package:api_selfxo_project/printer/printer_s.dart';
 import 'package:api_selfxo_project/api/kiosk_api.dart';
 
@@ -19,6 +22,7 @@ enum PrinterStatus { printing, success, error }
 class PaymentSuccessDialog extends StatefulWidget {
   final List<Map<String, dynamic>> cart;
   final int orderNumber;
+  final String? publicOrderNumber;
   final String language;
   final String? restaurantName;
   final String? transactionId;
@@ -29,6 +33,7 @@ class PaymentSuccessDialog extends StatefulWidget {
     super.key,
     required this.cart,
     required this.orderNumber,
+    this.publicOrderNumber,
     this.language = "en",
     this.restaurantName,
     this.transactionId,
@@ -68,16 +73,39 @@ class _PaymentSuccessDialogState extends State<PaymentSuccessDialog>
   String? printerStatusMessage;
   String _printStatusText = "Preparing...";
   String _restaurantName = "OUR KITCHEN";
+  String get _displayOrderNumber =>
+      _normalizeOrderNumber(widget.publicOrderNumber) ??
+      widget.orderNumber.toString();
 
   static const MethodChannel _usbEvents = MethodChannel(
     'com.whimsicaldev/usb_events',
   );
   final PrinterService _printerService = PrinterService();
 
-  int get totalAmount => widget.cart.fold(
+  bool get _isTakeAway {
+    final type = (widget.orderType ?? "")
+        .trim()
+        .toLowerCase()
+        .replaceAll("-", "_")
+        .replaceAll(RegExp(r"\s+"), "_");
+    return type == "pickup" || type == "takeaway" || type == "take_away";
+  }
+
+  int get _parcelTotal {
+    if (!_isTakeAway) return 0;
+    return widget.cart.fold(
+      0,
+      (sum, item) =>
+          sum + _asInt(item["take_away_charge"]) * _asInt(item["qty"]),
+    );
+  }
+
+  int get totalAmount =>
+      widget.cart.fold(
         0,
         (sum, item) => sum + _asInt(item["price"]) * _asInt(item["qty"]),
-      );
+      ) +
+      _parcelTotal;
 
   int _asInt(dynamic v) {
     if (v is int) return v;
@@ -198,6 +226,8 @@ class _PaymentSuccessDialogState extends State<PaymentSuccessDialog>
           "OUR KITCHEN";
       final showTaxInReceipt =
           await KioskRestaurantMeta.getStoredShowTaxInReceipt();
+      final receiptMode = await ReceiptPrintMode.getStoredMode();
+      final printBothCopies = receiptMode == "both";
       final taxId = showTaxInReceipt
           ? (prefs.getString(KioskRestaurantMeta.gstNumberKey) ??
               prefs.getString(KioskRestaurantMeta.taxIdKey))
@@ -205,14 +235,24 @@ class _PaymentSuccessDialogState extends State<PaymentSuccessDialog>
 
       String? transactionId = widget.transactionId;
       DateTime? orderDate = widget.orderDate;
-      if (transactionId == null || orderDate == null) {
+      String? publicOrderNumber =
+          _normalizeOrderNumber(widget.publicOrderNumber);
+      if (transactionId == null ||
+          orderDate == null ||
+          publicOrderNumber == null) {
         try {
           final res = await KioskApi().getOrderDetails(widget.orderNumber);
           final raw = res.data;
           transactionId ??= _findTxnId(raw);
           orderDate ??= _parseOrderDate(raw);
+          publicOrderNumber ??= _findOrderNumber(raw);
         } catch (_) {}
       }
+      final backendOrderNumber = _normalizeOrderNumber(publicOrderNumber);
+      kioskLog(
+        "Success receipt print order=${backendOrderNumber ?? widget.orderNumber.toString()}",
+        tag: "PAYMENT",
+      );
 
       await _printerService.printOrder(
         orderId: widget.orderNumber,
@@ -223,6 +263,11 @@ class _PaymentSuccessDialogState extends State<PaymentSuccessDialog>
         transactionId: transactionId,
         orderDate: orderDate,
         orderType: widget.orderType,
+        orderNumber: backendOrderNumber,
+        backendOnly: false,
+        preserveBackendPrintFormat: true,
+        requireBothCopies: printBothCopies,
+        counterCopyLabel: printBothCopies,
         removeTaxLines: !showTaxInReceipt,
       );
 
@@ -342,17 +387,52 @@ class _PaymentSuccessDialogState extends State<PaymentSuccessDialog>
     return null;
   }
 
+  String? _findOrderNumber(dynamic value) {
+    const keys = [
+      "order_number",
+      "orderNumber",
+      "order_no",
+      "orderNo",
+      "invoice_number",
+      "invoiceNumber",
+      "public_order_number",
+      "publicOrderNumber",
+      "number",
+    ];
+    if (value is Map) {
+      for (final k in keys) {
+        final raw = _normalizeOrderNumber(value[k]);
+        if (raw != null) return raw;
+      }
+      for (final entry in value.entries) {
+        final found = _findOrderNumber(entry.value);
+        if (found != null) return found;
+      }
+    } else if (value is List) {
+      for (final item in value) {
+        final found = _findOrderNumber(item);
+        if (found != null) return found;
+      }
+    }
+    return null;
+  }
+
+  String? _normalizeOrderNumber(dynamic raw) {
+    final value = raw?.toString().trim();
+    if (value == null ||
+        value.isEmpty ||
+        value.toLowerCase() == "null" ||
+        value.toLowerCase() == "n/a" ||
+        value == "0") {
+      return null;
+    }
+    return value;
+  }
+
   DateTime? _parseDateValue(dynamic v) {
     if (v == null) return null;
     try {
-      if (v is int) {
-        return v > 1000000000000
-            ? DateTime.fromMillisecondsSinceEpoch(v)
-            : DateTime.fromMillisecondsSinceEpoch(v * 1000);
-      }
-      if (v is String) {
-        return DateTime.tryParse(v);
-      }
+      return IndiaTime.parseDateValue(v);
     } catch (_) {}
     return null;
   }
@@ -622,6 +702,26 @@ class _PaymentSuccessDialogState extends State<PaymentSuccessDialog>
                   ),
                 ),
               ),
+          if (_parcelTotal > 0)
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 2),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  const Expanded(
+                    child: Text(
+                      "Parcel Charge",
+                      style: TextStyle(fontSize: 10),
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                  Text(
+                    "₹$_parcelTotal",
+                    style: const TextStyle(fontSize: 10),
+                  ),
+                ],
+              ),
+            ),
           const Divider(),
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -821,7 +921,7 @@ class _PaymentSuccessDialogState extends State<PaymentSuccessDialog>
             ),
           ),
           Text(
-            "Order #${widget.orderNumber}",
+            "Order #$_displayOrderNumber",
             style: const TextStyle(
               fontSize: 22,
               fontWeight: FontWeight.bold,

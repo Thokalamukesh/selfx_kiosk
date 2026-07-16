@@ -3,16 +3,17 @@ import 'dart:ui';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:api_selfxo_project/printer/register_kiosk.dart';
 import 'package:api_selfxo_project/screens/register_screen.dart';
 import 'package:api_selfxo_project/background_image/background_image.dart';
 import 'package:api_selfxo_project/core/connectivity_service.dart';
 import 'package:api_selfxo_project/core/idle_timer.dart';
 import 'package:api_selfxo_project/core/kiosk_background_service.dart';
 import 'package:api_selfxo_project/core/kiosk_config.dart';
+import 'package:api_selfxo_project/core/kiosk_log.dart';
 import 'package:api_selfxo_project/core/kiosk_memory_service.dart';
 import 'package:api_selfxo_project/core/kiosk_power.dart';
 import 'package:api_selfxo_project/core/kiosk_watchdog.dart';
+import 'package:api_selfxo_project/printer/register_kiosk.dart';
 import 'package:api_selfxo_project/providers/restaurant_provider.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -23,10 +24,6 @@ final GlobalKey<NavigatorState> rootNavigatorKey = GlobalKey<NavigatorState>();
 Future<void> main() async {
   await runZonedGuarded<Future<void>>(() async {
     WidgetsFlutterBinding.ensureInitialized();
-    await initializeKioskBackgroundService();
-    // Send an early heartbeat so the background watchdog doesn't relaunch
-    // the app during cold start.
-    sendUiHeartbeat();
     FlutterError.onError = (details) {
       FlutterError.presentError(details);
       reportUiCrash(details.exception, details.stack ?? StackTrace.current);
@@ -42,14 +39,22 @@ Future<void> main() async {
     ]);
     PaintingBinding.instance.imageCache.maximumSizeBytes = 120 << 20; // 120MB
     PaintingBinding.instance.imageCache.maximumSize = 300;
-    WakelockPlus.enable();
+    unawaited(WakelockPlus.enable());
     final prefs = await SharedPreferences.getInstance();
-    final restaurantId = prefs.getString("restaurant_id");
+    final authToken = prefs.getString("auth_token")?.trim() ?? "";
     final setupDone = prefs.getBool("kiosk_setup_done") ?? false;
-    final Widget initialHome =
-        (restaurantId == null || restaurantId.trim().isEmpty)
-            ? const UserIdScreen()
-            : (setupDone ? const WelcomeScreen() : const RegisterKioskScreen());
+    final printerConfigured =
+        (prefs.getString("printer_type")?.trim().isNotEmpty ?? false);
+    final readyForWelcome = setupDone && printerConfigured;
+    final Widget initialHome = authToken.isEmpty
+        ? const UserIdScreen()
+        : readyForWelcome
+            ? const WelcomeScreen()
+            : const RegisterKioskScreen();
+    kioskLog(
+      "Startup route=${authToken.isEmpty ? 'pairing' : readyForWelcome ? 'welcome' : 'printer_setup'} token=${authToken.isNotEmpty} setup=$setupDone printer=$printerConfigured",
+      tag: "STARTUP",
+    );
 
     runApp(
       ChangeNotifierProvider(
@@ -91,7 +96,6 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _resetIdleTimer();
-    _startServiceHeartbeat();
 
     ConnectivityService.instance.start();
     _idleListener = _handleIdleState;
@@ -111,11 +115,8 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
     );
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      KioskPower.requestIgnoreBatteryOptimizations();
-    });
-
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      sendUiReady();
+      unawaited(_startBackgroundServiceAfterFirstFrame());
+      unawaited(KioskPower.requestIgnoreBatteryOptimizations());
     });
 
     _heartbeatTimer?.cancel();
@@ -130,15 +131,36 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
     });
   }
 
+  Future<void> _startBackgroundServiceAfterFirstFrame() async {
+    try {
+      kioskLog("Initializing background service", tag: "STARTUP");
+      await initializeKioskBackgroundService().timeout(
+        const Duration(seconds: 8),
+      );
+      if (!mounted) return;
+      sendUiHeartbeat();
+      sendUiReady();
+      _startServiceHeartbeat();
+      kioskLog("Background service ready", tag: "STARTUP");
+    } catch (e, stackTrace) {
+      kioskLogError(
+        "Background service init skipped: $e",
+        tag: "STARTUP",
+        error: e,
+        stackTrace: stackTrace,
+      );
+    }
+  }
+
   void _handleFreezeDetected(String reason) {
     _scheduleImageCacheClear();
   }
 
   Future<bool> _isKioskSetupDone() async {
     final prefs = await SharedPreferences.getInstance();
-    final restaurantId = prefs.getString("restaurant_id")?.trim() ?? "";
+    final authToken = prefs.getString("auth_token")?.trim() ?? "";
     final setupDone = prefs.getBool("kiosk_setup_done") ?? false;
-    return restaurantId.isNotEmpty && setupDone;
+    return authToken.isNotEmpty && setupDone;
   }
 
   Future<void> _returnToWelcomeWhenSetupDone({bool resetIdle = false}) async {

@@ -126,7 +126,7 @@ class ConnectivityService {
     for (int i = 0; i < 2; i++) {
       try {
         final socket = await Socket.connect(
-          "selfpos.sirixo.com",
+          "app.selfx.in",
           443,
           timeout: const Duration(seconds: 3),
         );

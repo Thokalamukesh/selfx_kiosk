@@ -31,7 +31,6 @@ class EpsonUSBPrinterService {
 
   // ================= GET PRINTER LIST =================
   Future<List<Map<String, dynamic>>> getPrinterList() async {
-
     try {
       final dynamic res = await _invoke<dynamic>('getPrinterList');
 
@@ -44,7 +43,6 @@ class EpsonUSBPrinterService {
       } else {
         list = [];
       }
-
 
       return list
           .whereType<Map>()
@@ -62,12 +60,14 @@ class EpsonUSBPrinterService {
     final int? vendorId = _toInt(printer['vendorId']);
     final int? productId = _toInt(printer['productId']);
 
-
-    await _invoke<void>('setSelectedPrinter', {
-      'deviceId': deviceId,
-      'vendorId': vendorId,
-      'productId': productId,
-    }, _connectTimeout);
+    await _invoke<void>(
+        'setSelectedPrinter',
+        {
+          'deviceId': deviceId,
+          'vendorId': vendorId,
+          'productId': productId,
+        },
+        _connectTimeout);
   }
 
   Future<void> scanAndConnect() async {
@@ -78,7 +78,6 @@ class EpsonUSBPrinterService {
     final int? deviceId = _toInt(printer['deviceId']);
     final int? vendorId = _toInt(printer['vendorId']);
     final int? productId = _toInt(printer['productId']);
-
 
     final bool? requested = await _invoke<bool>(
       'requestUsbPermission',
@@ -95,7 +94,6 @@ class EpsonUSBPrinterService {
     final int? deviceId = _toInt(printer['deviceId']);
     final int? vendorId = _toInt(printer['vendorId']);
     final int? productId = _toInt(printer['productId']);
-
 
     final bool? requested = await _invoke<bool>(
       'requestUsbPermissionWithUi',
@@ -119,31 +117,27 @@ class EpsonUSBPrinterService {
     await _invoke<void>('clearNativeLogs');
   }
 
-  
-
- 
-
   Future<void> printData({
     required Map<String, dynamic> printer,
     required List<Map<String, dynamic>> printObject,
   }) async {
-
     await _ensureConnection(printer);
 
     try {
-
       final int? deviceId = _toInt(printer['deviceId']);
       final int? vendorId = _toInt(printer['vendorId']);
       final int? productId = _toInt(printer['productId']);
 
-      await _invoke<void>('printData', {
-        'printObject': jsonEncode(printObject),
-        'lineFeed': 3,
-        'deviceId': deviceId,
-        'vendorId': vendorId,
-        'productId': productId,
-      }, _printTimeout);
-
+      await _invoke<void>(
+          'printData',
+          {
+            'printObject': jsonEncode(_printerSafePrintObject(printObject)),
+            'lineFeed': 3,
+            'deviceId': deviceId,
+            'vendorId': vendorId,
+            'productId': productId,
+          },
+          _printTimeout);
     } catch (e, st) {
       rethrow;
     }
@@ -154,34 +148,60 @@ class EpsonUSBPrinterService {
     required Map<String, dynamic> printer,
     required List<dynamic> printObject,
   }) async {
-
     await _ensureConnection(printer);
 
     try {
       final int? deviceId = _toInt(printer['deviceId']);
       final int? vendorId = _toInt(printer['vendorId']);
       final int? productId = _toInt(printer['productId']);
-      await _invoke<void>('printData', {
-        'printObject': jsonEncode(printObject),
-        'lineFeed': 0, // IMPORTANT: backend already includes feedLine/cut
-        'deviceId': deviceId,
-        'vendorId': vendorId,
-        'productId': productId,
-      }, _printTimeout);
+      await _invoke<void>(
+          'printData',
+          {
+            'printObject': jsonEncode(_printerSafePrintObject(printObject)),
+            'lineFeed': 0, // IMPORTANT: backend already includes feedLine/cut
+            'deviceId': deviceId,
+            'vendorId': vendorId,
+            'productId': productId,
+          },
+          _printTimeout);
     } catch (e, st) {
       rethrow;
     }
   }
 
+  List<dynamic> _printerSafePrintObject(List<dynamic> printObject) {
+    return printObject.map(_printerSafeValue).toList();
+  }
+
+  dynamic _printerSafeValue(dynamic value) {
+    if (value is String) return _printerSafeText(value);
+    if (value is List) return value.map(_printerSafeValue).toList();
+    if (value is Map) {
+      return value.map(
+        (key, entryValue) => MapEntry(key, _printerSafeValue(entryValue)),
+      );
+    }
+    return value;
+  }
+
+  String _printerSafeText(String value) {
+    return value
+        .replaceAll('₹', 'Rs ')
+        .replaceAll('₨', 'Rs ')
+        .replaceAll(RegExp(r'Rs\s+'), 'Rs ');
+  }
+
   // ================= QUERY PRINTER STATUS =================
   Future<String> queryStatus({Map<String, dynamic>? printer}) async {
-
     try {
-      final Map? res = await _invoke<Map>('queryStatus', {
-        'deviceId': _toInt(printer?['deviceId']),
-        'vendorId': _toInt(printer?['vendorId']),
-        'productId': _toInt(printer?['productId']),
-      }, _defaultTimeout);
+      final Map? res = await _invoke<Map>(
+          'queryStatus',
+          {
+            'deviceId': _toInt(printer?['deviceId']),
+            'vendorId': _toInt(printer?['vendorId']),
+            'productId': _toInt(printer?['productId']),
+          },
+          _defaultTimeout);
       return res?['status'] ?? 'UNKNOWN_STATUS';
     } catch (e, st) {
       return 'ERROR';
@@ -190,7 +210,6 @@ class EpsonUSBPrinterService {
 
   // ================= USB CONNECTION =================
   Future<void> _ensureConnection(Map<String, dynamic> printer) async {
-
     final int? deviceId = _toInt(printer['deviceId']);
     final int? vendorId = _toInt(printer['vendorId']);
     final int? productId = _toInt(printer['productId']);
@@ -200,13 +219,14 @@ class EpsonUSBPrinterService {
     }
 
     try {
-
-      await _invoke<void>('connectToPrinter', {
-        'deviceId': deviceId,
-        'vendorId': vendorId,
-        'productId': productId,
-      }, _connectTimeout);
-
+      await _invoke<void>(
+          'connectToPrinter',
+          {
+            'deviceId': deviceId,
+            'vendorId': vendorId,
+            'productId': productId,
+          },
+          _connectTimeout);
     } catch (e, st) {
       rethrow;
     }
@@ -217,7 +237,6 @@ class EpsonUSBPrinterService {
     required String restaurantName,
     required String address,
   }) {
-
     final now = DateTime.now();
     final dateTime =
         "${now.year}-${_two(now.month)}-${_two(now.day)} ${_two(now.hour)}:${_two(now.minute)}";

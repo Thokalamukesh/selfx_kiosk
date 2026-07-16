@@ -1,5 +1,3 @@
-import 'dart:developer' as developer;
-
 import 'package:flutter/foundation.dart';
 
 void kioskLog(
@@ -12,12 +10,8 @@ void kioskLog(
   if (!kDebugMode) return;
 
   debugPrint('[$tag] $text');
-  developer.log(
-    text,
-    name: tag,
-    error: error,
-    stackTrace: stackTrace,
-  );
+  if (error != null) debugPrint('[$tag] error=$error');
+  if (stackTrace != null) debugPrint(stackTrace.toString());
 }
 
 void kioskLogError(

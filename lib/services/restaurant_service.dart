@@ -8,12 +8,14 @@ class RestaurantService {
   /// and FORCE-SYNC backend device_id
   Future<Map<String, dynamic>?> fetchRestaurantData() async {
     try {
-      final dio = DioClient.getDio();
-      final res = await dio.get("kiosks/getRestaurantData");
+      final dio = await DioClient.getAuthedDio();
+      final res = await dio.get("kiosk/bootstrap");
 
       final prefs = await SharedPreferences.getInstance();
 
-      final backendDeviceId = res.data?["kiosk_settings"]?["device_id"];
+      final backendDeviceId =
+          res.data?["terminal"]?["device_uuid"] ??
+          res.data?["kiosk_settings"]?["device_id"];
 
       if (backendDeviceId != null && backendDeviceId.toString().isNotEmpty) {
         await prefs.setString("device_uuid", backendDeviceId.toString());

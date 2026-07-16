@@ -6,6 +6,7 @@ import 'package:api_selfxo_project/screens/payment_success.dart';
 // Ensure this is imported
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:dio/dio.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -44,22 +45,17 @@ List<Map<String, dynamic>> _buildPaymentOrderItems(
   List<Map<String, dynamic>> cart,
 ) {
   return cart.map((item) {
-    final basePrice = _paymentAsInt(item["price"]);
+    final unitPrice = _paymentAsInt(item["price"]);
     final variation = item["variation"];
     final modifiers = (item["modifiers"] as List? ?? const []);
-    final finalUnitPrice = basePrice +
-        _paymentAsInt(variation?["price"]) +
-        modifiers.fold<int>(
-          0,
-          (sum, m) => sum + _paymentAsInt(m["price"]),
-        );
 
     return {
       "id": item["id"],
       "item_name": item["name"],
       "quantity": _paymentAsInt(item["qty"]),
-      "price": finalUnitPrice,
-      "itemPrice": finalUnitPrice,
+      "price": unitPrice,
+      "itemPrice": unitPrice,
+      "take_away_charge": _paymentAsInt(item["take_away_charge"]),
       "item_photo_url": item["image"],
       "variation_id": variation?["id"],
       "variation_name": variation?["variation"],
@@ -84,6 +80,9 @@ class _PaymentScreenState extends State<PaymentScreen>
   late final ValueNotifier<double> _failProgressNotifier;
   Timer? countdownTimer;
   static const int _failAutoCloseSeconds = 3;
+  static const Duration _normalPaymentPollDelay = Duration(seconds: 4);
+  static const Duration _firstPaymentPollDelay = Duration(seconds: 2);
+  static const Duration _maxPaymentPollDelay = Duration(seconds: 30);
   int _failSeconds = _failAutoCloseSeconds;
 
   bool loading = true;
@@ -93,14 +92,20 @@ class _PaymentScreenState extends State<PaymentScreen>
   bool _active = true;
 
   int? orderId;
+  String? orderNumber;
   String? qrData;
   double? payableAmount;
+  String? _transactionId;
+  DateTime? _orderDate;
+  bool _counterPayment = false;
 
   String displayRestaurantName = "OUR KITCHEN";
 
   Timer? paymentTimer;
   Timer? timeoutTimer;
   Timer? _paymentFailTimer;
+  bool _paymentCompleted = false;
+  int _paymentPollFailures = 0;
 
   @override
   void initState() {
@@ -260,21 +265,10 @@ class _PaymentScreenState extends State<PaymentScreen>
   // 🔥 FETCH SAVED NAME
   Future<void> preloadRestaurantData() async {
     try {
-      final res = await KioskApi().getRestaurantData();
-      final bundle = KioskRestaurantMeta.extractBundle(res.data);
-      final name = KioskRestaurantMeta.resolveRestaurantName(
-        root: bundle.root,
-        data: bundle.data,
-        restaurant: bundle.restaurant,
-        kioskSettings: bundle.kioskSettings,
-        fallback: "OUR KITCHEN",
-      );
-      await KioskRestaurantMeta.storeFromMaps(
-        root: bundle.root,
-        data: bundle.data,
-        restaurant: bundle.restaurant,
-        kioskSettings: bundle.kioskSettings,
-      );
+      final prefs = await SharedPreferences.getInstance();
+      final name = prefs.getString(KioskRestaurantMeta.kioskDisplayNameKey) ??
+          prefs.getString(KioskRestaurantMeta.restaurantNameKey) ??
+          "OUR KITCHEN";
 
       if (mounted) {
         setState(() {
@@ -303,16 +297,44 @@ class _PaymentScreenState extends State<PaymentScreen>
       );
 
       orderId = createRes.data["order"]?["id"];
+      orderNumber ??= _extractOrderNumber(createRes.data);
+      _transactionId ??= _extractTransactionId(createRes.data);
+      _orderDate ??= _extractOrderDate(createRes.data);
+      if (_isCounterPayment(createRes.data)) {
+        payableAmount = widget.totalAmount.toDouble();
+        countdownTimer?.cancel();
+        timeoutTimer?.cancel();
+        if (mounted) {
+          setState(() {
+            _counterPayment = true;
+            loading = false;
+          });
+        }
+        return;
+      }
 
       final prefs = await SharedPreferences.getInstance();
-      final restaurantId = prefs.getString("restaurant_id");
-      await DeviceInfoUtil.getDeviceId(restaurantId: restaurantId!);
+      final cachedDeviceId = prefs.getString("device_id")?.trim() ?? "";
+      final restaurantId = prefs.getString("restaurant_id")?.trim();
+      if (cachedDeviceId.isEmpty &&
+          restaurantId != null &&
+          restaurantId.isNotEmpty) {
+        await DeviceInfoUtil.getDeviceId(restaurantId: restaurantId);
+      }
 
-      final qrRes = await KioskApi().generateQr(orderId: orderId!);
+      dynamic paymentPayload = createRes.data;
+      qrData = _extractQrString(paymentPayload);
+      if (qrData == null) {
+        final qrRes = await KioskApi().generateQr(orderId: orderId!);
+        paymentPayload = qrRes.data;
+        qrData = _extractQrString(paymentPayload);
+      }
+      kioskLog(
+        "QR value kind=${_qrValueKind(qrData)} length=${qrData?.length ?? 0} prefix=${_qrPrefix(qrData)}",
+        tag: "PAYMENT",
+      );
 
-      qrData = _extractQrString(qrRes.data);
-
-      final amountPaise = _extractAmountPaise(qrRes.data);
+      final amountPaise = _extractAmountPaise(paymentPayload);
       payableAmount = amountPaise != null
           ? amountPaise / 100
           : widget.totalAmount.toDouble();
@@ -327,8 +349,10 @@ class _PaymentScreenState extends State<PaymentScreen>
   String? _extractQrString(dynamic payload) {
     String? asString(dynamic v) {
       if (v == null) return null;
+      if (v is Map || v is Iterable) return null;
       final s = v.toString().trim();
-      return s.isEmpty ? null : s;
+      if (s.isEmpty || s.toLowerCase() == "null") return null;
+      return s;
     }
 
     dynamic readKey(Map map, List<String> keys) {
@@ -350,17 +374,38 @@ class _PaymentScreenState extends State<PaymentScreen>
         final direct = readKey(data, const [
           "qrCode",
           "qr_code",
-          "qr",
           "qrData",
           "qr_data",
           "upi_qr",
           "upiQr",
+          "upi_url",
+          "upiUrl",
           "upi_string",
           "upiString",
           "payload",
+          "intent_url",
+          "intentUrl",
+          "deep_link",
+          "deepLink",
+          "deeplink",
+          "payment_url",
+          "paymentUrl",
+          "checkout_url",
+          "checkoutUrl",
+          "redirect_url",
+          "redirectUrl",
         ]);
         final directStr = asString(direct);
         if (directStr != null) return directStr;
+
+        final image = readKey(data, const [
+          "qr_url",
+          "qrUrl",
+          "image_url",
+          "imageUrl",
+        ]);
+        final imageStr = asString(image);
+        if (imageStr != null) return imageStr;
 
         for (final key in const [
           "data",
@@ -368,6 +413,10 @@ class _PaymentScreenState extends State<PaymentScreen>
           "response",
           "payload",
           "order",
+          "payment",
+          "qr",
+          "qrCode",
+          "qr_code",
           "qr_info",
         ]) {
           if (data.containsKey(key)) {
@@ -415,6 +464,44 @@ class _PaymentScreenState extends State<PaymentScreen>
     return findIn(payload, 4);
   }
 
+  bool _isCounterPayment(dynamic payload) {
+    if (payload is! Map) return false;
+    final root = Map<String, dynamic>.from(payload);
+    final order = root["order"] is Map
+        ? Map<String, dynamic>.from(root["order"] as Map)
+        : const <String, dynamic>{};
+    final payment = order["payment"] is Map
+        ? Map<String, dynamic>.from(order["payment"] as Map)
+        : root["payment"] is Map
+            ? Map<String, dynamic>.from(root["payment"] as Map)
+            : const <String, dynamic>{};
+
+    final candidates = [
+      payment["type"],
+      payment["gateway"],
+      payment["method"],
+      payment["payment_method"],
+      order["payment_method"],
+      root["payment_method"],
+    ];
+
+    for (final candidate in candidates) {
+      final value = candidate
+          ?.toString()
+          .trim()
+          .toLowerCase()
+          .replaceAll("-", "_")
+          .replaceAll(" ", "_");
+      if (value == "counter" ||
+          value == "pay_at_counter" ||
+          value == "cash" ||
+          value == "cod") {
+        return true;
+      }
+    }
+    return false;
+  }
+
   bool _looksLikeImageUrl(String value) {
     final v = value.toLowerCase();
     if (!(v.startsWith("http://") || v.startsWith("https://"))) return false;
@@ -425,40 +512,128 @@ class _PaymentScreenState extends State<PaymentScreen>
             v.contains(".webp"));
   }
 
+  String _qrValueKind(String? value) {
+    final text = value?.trim().toLowerCase() ?? "";
+    if (text.isEmpty) return "empty";
+    if (text.startsWith("upi://")) return "upi";
+    if (text.startsWith("intent://")) return "intent";
+    if (_looksLikeImageUrl(text)) return "image_url";
+    if (text.startsWith("http://") || text.startsWith("https://")) {
+      return "web_url";
+    }
+    return "raw";
+  }
+
+  String _qrPrefix(String? value) {
+    final text = value?.trim() ?? "";
+    if (text.isEmpty) return "-";
+    final safe = text.replaceAll(RegExp(r"[\\r\\n\\t]"), " ");
+    return safe.length <= 24 ? safe : "${safe.substring(0, 24)}...";
+  }
+
   void _startPaymentPolling() {
+    _paymentPollFailures = 0;
+    _schedulePaymentPoll(_firstPaymentPollDelay);
+  }
+
+  void _schedulePaymentPoll(Duration delay) {
     paymentTimer?.cancel();
-    paymentTimer = Timer.periodic(const Duration(seconds: 3), (_) async {
-      if (!_active || !mounted) return;
-      if (orderId == null) return;
-      if (_pollingPayment) return;
+    if (!_active || !mounted || _paymentCompleted || errorMessage != null) {
+      return;
+    }
+    paymentTimer = Timer(delay, () => unawaited(_pollPaymentStatus()));
+  }
 
-      try {
-        _pollingPayment = true;
-        final res = await KioskApi().checkPayment(orderId!);
-        if (!_active || !mounted) return;
-
-        final status = _extractPaymentStatus(res.data);
-        kioskLog(
-          "Payment poll order=$orderId status=${status ?? 'unknown'} body=${res.data}",
-          tag: "PAYMENT",
-        );
-
-        if (_isPaidStatus(status)) {
-          paymentTimer?.cancel();
-
-          await _handlePaymentSuccess();
+  Duration _rateLimitDelay(Object error) {
+    if (error is DioException) {
+      final retryAfter = error.response?.headers.value("retry-after")?.trim();
+      if (retryAfter != null && retryAfter.isNotEmpty) {
+        final seconds = int.tryParse(retryAfter);
+        if (seconds != null && seconds > 0) {
+          return _clampDuration(
+            Duration(seconds: seconds),
+            const Duration(seconds: 5),
+            const Duration(minutes: 2),
+          );
         }
-      } catch (e, stackTrace) {
-        kioskLogError(
-          "Payment poll failed for order=$orderId",
-          tag: "PAYMENT",
-          error: e,
-          stackTrace: stackTrace,
-        );
-      } finally {
-        _pollingPayment = false;
+        final retryAt = DateTime.tryParse(retryAfter);
+        if (retryAt != null) {
+          final delay = retryAt.difference(DateTime.now());
+          if (!delay.isNegative) {
+            return _clampDuration(
+              delay,
+              const Duration(seconds: 5),
+              const Duration(minutes: 2),
+            );
+          }
+        }
       }
-    });
+    }
+    return const Duration(seconds: 20);
+  }
+
+  Duration _clampDuration(Duration value, Duration min, Duration max) {
+    if (value < min) return min;
+    if (value > max) return max;
+    return value;
+  }
+
+  bool _isRateLimitError(Object error) {
+    return error is DioException && error.response?.statusCode == 429;
+  }
+
+  Future<void> _pollPaymentStatus() async {
+    if (!_active || !mounted) return;
+    if (orderId == null) return;
+    if (_pollingPayment || _paymentCompleted) return;
+
+    try {
+      _pollingPayment = true;
+      final res = await KioskApi().checkPayment(orderId!);
+      if (!_active || !mounted) return;
+
+      _transactionId ??= _extractTransactionId(res.data);
+      _orderDate ??= _extractOrderDate(res.data);
+      orderNumber ??= _extractOrderNumber(res.data);
+      final status = _extractPaymentStatus(res.data);
+      kioskLog(
+        "Payment poll order=$orderId status=${status ?? 'unknown'} body=${res.data}",
+        tag: "PAYMENT",
+      );
+
+      if (_isPaidStatus(status)) {
+        paymentTimer?.cancel();
+        await _handlePaymentSuccess();
+      } else if (_isFailedStatus(status)) {
+        _handleError("Payment ${status?.replaceAll('_', ' ') ?? 'failed'}");
+      } else {
+        _paymentPollFailures = 0;
+        _schedulePaymentPoll(_normalPaymentPollDelay);
+      }
+    } catch (e, stackTrace) {
+      if (_isRateLimitError(e)) {
+        final delay = _rateLimitDelay(e);
+        kioskLog(
+          "Payment poll rate limited for order=$orderId; retrying in ${delay.inSeconds}s",
+          tag: "PAYMENT",
+        );
+        _schedulePaymentPoll(delay);
+        return;
+      }
+
+      _paymentPollFailures++;
+      final backoffSeconds =
+          (4 * _paymentPollFailures).clamp(6, _maxPaymentPollDelay.inSeconds);
+      kioskLogError(
+        "Payment poll failed for order=$orderId; retrying in ${backoffSeconds}s",
+        tag: "PAYMENT",
+        error: e,
+        stackTrace: stackTrace,
+      );
+      _schedulePaymentPoll(Duration(seconds: backoffSeconds));
+    } finally {
+      _pollingPayment = false;
+    }
   }
 
   String? _extractPaymentStatus(dynamic payload) {
@@ -468,23 +643,34 @@ class _PaymentScreenState extends State<PaymentScreen>
       return text.toLowerCase().replaceAll("-", "_").replaceAll(" ", "_");
     }
 
+    String? readStatus(Map data, List<String> keys) {
+      for (final key in keys) {
+        if (data.containsKey(key)) {
+          final status = normalize(data[key]);
+          if (status != null) return status;
+        }
+      }
+      final wanted = keys.map((e) => e.toLowerCase()).toSet();
+      for (final entry in data.entries) {
+        if (wanted.contains(entry.key.toString().toLowerCase())) {
+          final status = normalize(entry.value);
+          if (status != null) return status;
+        }
+      }
+      return null;
+    }
+
     String? findIn(dynamic data, int depth) {
       if (data == null || depth <= 0) return null;
       if (data is Map) {
-        for (final key in const [
-          "status",
+        final explicitPaymentStatus = readStatus(data, const [
           "payment_status",
           "paymentStatus",
-          "order_status",
-          "orderStatus",
           "transaction_status",
           "transactionStatus",
-        ]) {
-          if (data.containsKey(key)) {
-            final status = normalize(data[key]);
-            if (status != null) return status;
-          }
-        }
+        ]);
+        if (explicitPaymentStatus != null) return explicitPaymentStatus;
+
         for (final key in const [
           "data",
           "order",
@@ -499,6 +685,12 @@ class _PaymentScreenState extends State<PaymentScreen>
             if (nested != null) return nested;
           }
         }
+
+        return readStatus(data, const [
+          "status",
+          "order_status",
+          "orderStatus",
+        ]);
       }
       return null;
     }
@@ -512,20 +704,161 @@ class _PaymentScreenState extends State<PaymentScreen>
         status == "success" ||
         status == "successful" ||
         status == "completed" ||
+        status == "complete" ||
         status == "payment_success" ||
-        status == "captured";
+        status == "captured" ||
+        status == "settled" ||
+        status == "approved" ||
+        status == "confirmed";
+  }
+
+  bool _isFailedStatus(String? status) {
+    if (status == null) return false;
+    return status == "failed" ||
+        status == "failure" ||
+        status == "cancelled" ||
+        status == "canceled" ||
+        status == "expired" ||
+        status == "timeout" ||
+        status == "timed_out" ||
+        status == "declined";
+  }
+
+  String? _extractTransactionId(dynamic payload) {
+    const keys = [
+      "transaction_id",
+      "transactionId",
+      "payment_id",
+      "paymentId",
+      "txn_id",
+      "txnId",
+      "payment_reference",
+      "payment_ref",
+      "reference_id",
+      "referenceId",
+    ];
+
+    String? read(dynamic value, int depth) {
+      if (value == null || depth <= 0) return null;
+      if (value is Map) {
+        for (final key in keys) {
+          if (!value.containsKey(key)) continue;
+          final text = value[key]?.toString().trim();
+          if (text != null && text.isNotEmpty && text.toLowerCase() != "null") {
+            return text;
+          }
+        }
+        for (final entry in value.entries) {
+          final found = read(entry.value, depth - 1);
+          if (found != null) return found;
+        }
+      } else if (value is Iterable) {
+        for (final item in value) {
+          final found = read(item, depth - 1);
+          if (found != null) return found;
+        }
+      }
+      return null;
+    }
+
+    return read(payload, 5);
+  }
+
+  DateTime? _extractOrderDate(dynamic payload) {
+    const keys = [
+      "created_at",
+      "createdAt",
+      "order_date",
+      "orderDate",
+      "paid_at",
+      "paidAt",
+      "updated_at",
+      "updatedAt",
+    ];
+
+    DateTime? parse(dynamic value) {
+      if (value == null) return null;
+      if (value is DateTime) return value;
+      return DateTime.tryParse(value.toString());
+    }
+
+    DateTime? read(dynamic value, int depth) {
+      if (value == null || depth <= 0) return null;
+      if (value is Map) {
+        for (final key in keys) {
+          if (!value.containsKey(key)) continue;
+          final parsed = parse(value[key]);
+          if (parsed != null) return parsed;
+        }
+        for (final entry in value.entries) {
+          final found = read(entry.value, depth - 1);
+          if (found != null) return found;
+        }
+      } else if (value is Iterable) {
+        for (final item in value) {
+          final found = read(item, depth - 1);
+          if (found != null) return found;
+        }
+      }
+      return null;
+    }
+
+    return read(payload, 5);
+  }
+
+  String? _extractOrderNumber(dynamic payload) {
+    const keys = [
+      "order_number",
+      "orderNumber",
+      "order_no",
+      "orderNo",
+      "invoice_number",
+      "invoiceNumber",
+      "number",
+    ];
+
+    String? read(dynamic value, int depth) {
+      if (value == null || depth <= 0) return null;
+      if (value is Map) {
+        for (final key in keys) {
+          if (!value.containsKey(key)) continue;
+          final text = value[key]?.toString().trim();
+          if (text != null && text.isNotEmpty && text.toLowerCase() != "null") {
+            return text;
+          }
+        }
+        for (final key in const ["order", "data", "payment", "result"]) {
+          final found = read(value[key], depth - 1);
+          if (found != null) return found;
+        }
+      } else if (value is Iterable) {
+        for (final item in value) {
+          final found = read(item, depth - 1);
+          if (found != null) return found;
+        }
+      }
+      return null;
+    }
+
+    return read(payload, 5);
   }
 
   bool _receiptPrinted = false;
 
   Future<void> _handlePaymentSuccess() async {
-    if (_receiptPrinted) return;
+    if (_paymentCompleted || _receiptPrinted) return;
+    _paymentCompleted = true;
     _receiptPrinted = true;
     countdownTimer?.cancel();
     timeoutTimer?.cancel();
     _paymentFailTimer?.cancel();
+    paymentTimer?.cancel();
 
     if (!_active || !mounted) return;
+    kioskLog(
+      "Payment success order=${orderNumber ?? orderId} transaction=${_transactionId ?? '-'}",
+      tag: "PAYMENT",
+    );
     _showSuccess();
   }
 
@@ -576,8 +909,11 @@ class _PaymentScreenState extends State<PaymentScreen>
         builder: (_) => PaymentSuccessDialog(
           cart: widget.cart,
           orderNumber: orderId!,
+          publicOrderNumber: orderNumber,
           language: "en",
           restaurantName: displayRestaurantName,
+          transactionId: _transactionId,
+          orderDate: _orderDate,
           orderType: widget.orderType,
         ),
       ),
@@ -640,11 +976,15 @@ class _PaymentScreenState extends State<PaymentScreen>
                 )
               : Column(
                   children: [
-                    _buildTimerHeader(),
+                    _counterPayment
+                        ? _buildCounterHeader()
+                        : _buildTimerHeader(),
                     Expanded(
                       child: SingleChildScrollView(
                         padding: const EdgeInsets.symmetric(horizontal: 16),
-                        child: _buildPaymentCard(),
+                        child: _counterPayment
+                            ? _buildCounterPaymentCard()
+                            : _buildPaymentCard(),
                       ),
                     ),
                     _buildBottomAction(),
@@ -778,10 +1118,148 @@ class _PaymentScreenState extends State<PaymentScreen>
     );
   }
 
+  Widget _buildCounterHeader() {
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 16),
+      decoration: BoxDecoration(
+        color: const Color(0xFFEAF7EE),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: const Color(0xFFB9E6C5)),
+      ),
+      child: const Row(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(Icons.point_of_sale_rounded, color: Color(0xFF167A3B)),
+          SizedBox(width: 10),
+          Text(
+            "Pay at Counter",
+            style: TextStyle(
+              color: Color(0xFF167A3B),
+              fontSize: 22,
+              fontWeight: FontWeight.w900,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildCounterPaymentCard() {
+    final bool isTablet = MediaQuery.of(context).size.width > 600;
+    final amount = payableAmount ?? widget.totalAmount.toDouble();
+
+    return Center(
+      child: ConstrainedBox(
+        constraints: BoxConstraints(
+          maxWidth: isTablet ? 500 : double.infinity,
+        ),
+        child: Container(
+          width: double.infinity,
+          padding: EdgeInsets.symmetric(
+            horizontal: isTablet ? 34 : 22,
+            vertical: isTablet ? 42 : 30,
+          ),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(isTablet ? 24 : 14),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withOpacity(0.06),
+                blurRadius: 15,
+                offset: const Offset(0, 5),
+              ),
+            ],
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                width: isTablet ? 118 : 92,
+                height: isTablet ? 118 : 92,
+                decoration: const BoxDecoration(
+                  color: Color(0xFFEAF7EE),
+                  shape: BoxShape.circle,
+                ),
+                child: Icon(
+                  Icons.receipt_long_rounded,
+                  size: isTablet ? 62 : 48,
+                  color: const Color(0xFF167A3B),
+                ),
+              ),
+              SizedBox(height: isTablet ? 26 : 20),
+              Text(
+                displayRestaurantName,
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  fontSize: isTablet ? 28 : 22,
+                  fontWeight: FontWeight.w900,
+                  color: Colors.black,
+                ),
+              ),
+              SizedBox(height: isTablet ? 14 : 10),
+              Text(
+                "₹${amount.toStringAsFixed(2)}",
+                style: TextStyle(
+                  fontSize: isTablet ? 46 : 36,
+                  fontWeight: FontWeight.w900,
+                  color: const Color(0xFF167A3B),
+                ),
+              ),
+              if ((orderNumber ?? "").isNotEmpty) ...[
+                SizedBox(height: isTablet ? 16 : 12),
+                Text(
+                  "Order: $orderNumber",
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    fontSize: isTablet ? 18 : 15,
+                    fontWeight: FontWeight.w700,
+                    color: Colors.black87,
+                  ),
+                ),
+              ],
+              SizedBox(height: isTablet ? 26 : 20),
+              Container(
+                width: double.infinity,
+                padding: EdgeInsets.all(isTablet ? 22 : 16),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFF7F8FA),
+                  borderRadius: BorderRadius.circular(16),
+                  border: Border.all(color: const Color(0xFFE3E6EA)),
+                ),
+                child: Text(
+                  "Please pay at the counter. Your order has been created.",
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    fontSize: isTablet ? 18 : 15,
+                    height: 1.35,
+                    fontWeight: FontWeight.w700,
+                    color: Colors.black87,
+                  ),
+                ),
+              ),
+              SizedBox(height: isTablet ? 20 : 14),
+              const Text(
+                "No QR is needed for counter payment.",
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  color: Colors.black54,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   Widget _buildPaymentCard() {
     final bool isTablet = MediaQuery.of(context).size.width > 600;
     final String qrValue = qrData?.trim() ?? "";
     final bool hasQr = qrValue.isNotEmpty;
+    final double qrSize = isTablet ? 360 : 280;
 
     return Center(
       child: ConstrainedBox(
@@ -869,8 +1347,8 @@ class _PaymentScreenState extends State<PaymentScreen>
                     children: [
                       if (!hasQr)
                         Container(
-                          width: isTablet ? 320 : 240,
-                          height: isTablet ? 320 : 240,
+                          width: qrSize,
+                          height: qrSize,
                           alignment: Alignment.center,
                           decoration: BoxDecoration(
                             color: Colors.grey.shade100,
@@ -886,28 +1364,45 @@ class _PaymentScreenState extends State<PaymentScreen>
                           ),
                         )
                       else if (_looksLikeImageUrl(qrValue))
-                        AppNetworkImage(
-                          url: normalizeImageUrl(qrValue),
-                          width: isTablet ? 320 : 240,
-                          height: isTablet ? 320 : 240,
-                          fit: BoxFit.contain,
-                          cacheWidth: isTablet ? 320 : 240,
-                          cacheHeight: isTablet ? 320 : 240,
-                          fallback: const SizedBox.shrink(),
+                        Container(
+                          color: Colors.white,
+                          padding: const EdgeInsets.all(18),
+                          child: AppNetworkImage(
+                            url: normalizeImageUrl(qrValue),
+                            width: qrSize,
+                            height: qrSize,
+                            fit: BoxFit.contain,
+                            cacheWidth: qrSize.round(),
+                            cacheHeight: qrSize.round(),
+                            fallback: const SizedBox.shrink(),
+                          ),
                         )
                       else
-                        QrImageView(
-                          data: qrValue,
-                          size: isTablet ? 320 : 240, // Larger QR for Tablets
-                          padding: const EdgeInsets.all(16),
-                          gapless: true,
-                          errorStateBuilder: (ctx, err) => Container(
-                            width: isTablet ? 320 : 240,
-                            height: isTablet ? 320 : 240,
-                            alignment: Alignment.center,
-                            child: const Text(
-                              "Invalid QR data",
-                              style: TextStyle(color: Colors.redAccent),
+                        Container(
+                          color: Colors.white,
+                          child: QrImageView(
+                            data: qrValue,
+                            size: qrSize,
+                            padding: const EdgeInsets.all(20),
+                            gapless: false,
+                            errorCorrectionLevel: QrErrorCorrectLevel.H,
+                            backgroundColor: Colors.white,
+                            eyeStyle: const QrEyeStyle(
+                              eyeShape: QrEyeShape.square,
+                              color: Colors.black,
+                            ),
+                            dataModuleStyle: const QrDataModuleStyle(
+                              dataModuleShape: QrDataModuleShape.square,
+                              color: Colors.black,
+                            ),
+                            errorStateBuilder: (ctx, err) => Container(
+                              width: qrSize,
+                              height: qrSize,
+                              alignment: Alignment.center,
+                              child: const Text(
+                                "Invalid QR data",
+                                style: TextStyle(color: Colors.redAccent),
+                              ),
                             ),
                           ),
                         ),
@@ -1047,6 +1542,94 @@ class _PaymentScreenState extends State<PaymentScreen>
     final mediaQuery = MediaQuery.of(context);
     final bool isTablet = mediaQuery.size.width > 600;
     final double bottomPadding = mediaQuery.padding.bottom;
+
+    if (_counterPayment) {
+      return Container(
+        width: double.infinity,
+        padding: EdgeInsets.fromLTRB(
+          isTablet ? 80 : 16,
+          16,
+          isTablet ? 80 : 16,
+          bottomPadding > 0 ? bottomPadding : 16,
+        ),
+        color: Colors.white,
+        child: Center(
+          child: ConstrainedBox(
+            constraints: BoxConstraints(
+              maxWidth: isTablet ? 520 : double.infinity,
+            ),
+            child: Row(
+              children: [
+                Expanded(
+                  child: SizedBox(
+                    height: isTablet ? 70 : 56,
+                    child: ElevatedButton.icon(
+                      onPressed: () => _showCancelConfirmation(
+                        context,
+                        isStartAgain: false,
+                      ),
+                      icon: Icon(
+                        Icons.close,
+                        color: Colors.red,
+                        size: isTablet ? 28 : 20,
+                      ),
+                      label: Text(
+                        "Cancel",
+                        style: TextStyle(
+                          color: Colors.red,
+                          fontWeight: FontWeight.bold,
+                          fontSize: isTablet ? 20 : 16,
+                        ),
+                      ),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: const Color(0xFFFFEBEE),
+                        elevation: 0,
+                        shape: RoundedRectangleBorder(
+                          borderRadius:
+                              BorderRadius.circular(isTablet ? 16 : 12),
+                          side: const BorderSide(color: Colors.red, width: 0.5),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: SizedBox(
+                    height: isTablet ? 70 : 56,
+                    child: ElevatedButton.icon(
+                      onPressed: _paymentCompleted
+                          ? null
+                          : () => unawaited(_handlePaymentSuccess()),
+                      icon: Icon(
+                        Icons.check_circle_rounded,
+                        size: isTablet ? 28 : 20,
+                      ),
+                      label: Text(
+                        "Print Receipt",
+                        style: TextStyle(
+                          fontWeight: FontWeight.bold,
+                          fontSize: isTablet ? 20 : 16,
+                        ),
+                      ),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: const Color(0xFF167A3B),
+                        foregroundColor: Colors.white,
+                        elevation: 0,
+                        shape: RoundedRectangleBorder(
+                          borderRadius:
+                              BorderRadius.circular(isTablet ? 16 : 12),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
 
     return Container(
       width: double.infinity,

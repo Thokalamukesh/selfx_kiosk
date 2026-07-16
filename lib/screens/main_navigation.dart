@@ -1,14 +1,12 @@
 import 'dart:async';
 import 'dart:ui';
 import 'dart:math';
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:api_selfxo_project/core/kiosk_config.dart';
 import 'package:api_selfxo_project/core/image_url.dart';
 import 'package:api_selfxo_project/core/kiosk_memory_service.dart';
 import 'home_page2.dart';
 import 'cart_page.dart';
-import 'package:api_selfxo_project/core/kiosk_log.dart';
 
 class MainNavigation extends StatefulWidget {
   final String orderType;
@@ -28,9 +26,10 @@ class _MainNavigationState extends State<MainNavigation>
   List<Map<String, dynamic>> recommendedProducts = [];
   List<dynamic> _productsRaw = [];
   final Map<int, int> _takeAwayChargeById = {};
-  Set<int> _cartIdSet() => cart
-      .map((e) => int.tryParse(e["id"].toString()) ?? 0)
-      .where((e) => e > 0)
+  final Map<int, int> _cartQtyByProduct = {};
+  Set<int> _cartIdSet() => _cartQtyByProduct.entries
+      .where((entry) => entry.value > 0)
+      .map((entry) => entry.key)
       .toSet();
 
   void _refreshRecommendations() {
@@ -39,12 +38,6 @@ class _MainNavigationState extends State<MainNavigation>
       _productsRaw,
       _cartIdSet(),
     );
-    if (kDebugMode) {
-      final ids = recommendedProducts
-          .map((e) => e["id"])
-          .where((e) => e != null)
-          .toList();
-    }
   }
 
   String _normalizeKey(String k) =>
@@ -60,6 +53,121 @@ class _MainNavigationState extends State<MainNavigation>
       if (wanted.contains(nk)) return entry.value;
     }
     return null;
+  }
+
+  int _parseTakeAwayCharge(dynamic value) {
+    if (value == null) return 0;
+    if (value is num) return value.toInt();
+    if (value is String) return num.tryParse(value.trim())?.toInt() ?? 0;
+
+    if (value is Map) {
+      final descriptor = _readKey(value, const [
+        "order_type",
+        "orderType",
+        "order_type_key",
+        "orderTypeKey",
+        "key",
+        "code",
+        "slug",
+        "type",
+        "name",
+        "title",
+      ]);
+      final descriptorText = descriptor?.toString().toLowerCase().trim() ?? "";
+      final normalizedDescriptor = _normalizeKey(descriptorText);
+      final describesCharge = normalizedDescriptor.isNotEmpty;
+      final describesTakeAway = normalizedDescriptor.contains("takeaway") ||
+          normalizedDescriptor.contains("pickup") ||
+          normalizedDescriptor.contains("parcel") ||
+          normalizedDescriptor.contains("packing") ||
+          normalizedDescriptor.contains("packaging");
+      final describesOtherOrderType = normalizedDescriptor.contains("dinein") ||
+          normalizedDescriptor.contains("delivery");
+      final describesOtherFee = normalizedDescriptor.contains("service") ||
+          normalizedDescriptor.contains("tax") ||
+          normalizedDescriptor.contains("discount");
+
+      if (describesCharge && !describesTakeAway) {
+        if (describesOtherOrderType || describesOtherFee) return 0;
+      }
+
+      final direct = _readKey(value, const [
+        "take_away",
+        "takeaway",
+        "pickup",
+        "parcel",
+        "packing",
+        "packaging",
+        "charge",
+        "amount",
+        "price",
+        "value",
+      ]);
+      final parsedDirect = _parseTakeAwayCharge(direct);
+      if (parsedDirect > 0) return parsedDirect;
+
+      var total = 0;
+      for (final entry in value.entries) {
+        final key = _normalizeKey(entry.key.toString());
+        if (key.contains("dinein") || key.contains("delivery")) continue;
+        if (key.contains("takeaway") ||
+            key.contains("pickup") ||
+            key.contains("parcel") ||
+            key.contains("packing") ||
+            key.contains("packaging")) {
+          total += _parseTakeAwayCharge(entry.value);
+        }
+      }
+      return total;
+    }
+
+    if (value is Iterable) {
+      var total = 0;
+      for (final item in value) {
+        total += _parseTakeAwayCharge(item);
+      }
+      return total;
+    }
+
+    return 0;
+  }
+
+  int _takeAwayChargeFromItem(Map item, Map<String, dynamic>? nestedMap) {
+    const chargeKeys = [
+      "take_away_charge",
+      "takeaway_charge",
+      "takeAwayCharge",
+      "parcel_charge",
+      "parcelCharge",
+      "packing_charge",
+      "packingCharge",
+      "packaging_charge",
+      "packagingCharge",
+      "pickup_charge",
+      "pickupCharge",
+    ];
+    const surchargeKeys = [
+      "order_type_surcharges",
+      "orderTypeSurcharges",
+      "order_type_charges",
+      "orderTypeCharges",
+      "surcharges",
+    ];
+
+    final direct = _parseTakeAwayCharge(_readKey(item, chargeKeys));
+    if (direct > 0) return direct;
+
+    final nested = nestedMap == null
+        ? 0
+        : _parseTakeAwayCharge(_readKey(nestedMap, chargeKeys));
+    if (nested > 0) return nested;
+
+    final surcharge = _parseTakeAwayCharge(_readKey(item, surchargeKeys));
+    if (surcharge > 0) return surcharge;
+
+    return nestedMap == null
+        ? 0
+        : _parseTakeAwayCharge(_readKey(nestedMap, surchargeKeys));
   }
 
   void _rebuildTakeAwayChargeMap(List<dynamic> raw) {
@@ -80,29 +188,7 @@ class _MainNavigationState extends State<MainNavigation>
         final nested = item["item"];
         final nestedMap =
             nested is Map ? Map<String, dynamic>.from(nested) : null;
-        final rawCharge = _readKey(
-              item,
-              [
-                "take_away_charge",
-                "takeaway_charge",
-                "takeAwayCharge",
-                "parcel_charge",
-                "parcelCharge",
-              ],
-            ) ??
-            (nestedMap == null
-                ? null
-                : _readKey(
-                    nestedMap,
-                    [
-                      "take_away_charge",
-                      "takeaway_charge",
-                      "takeAwayCharge",
-                      "parcel_charge",
-                      "parcelCharge",
-                    ],
-                  ));
-        _takeAwayChargeById[id] = _asInt(rawCharge);
+        _takeAwayChargeById[id] = _takeAwayChargeFromItem(item, nestedMap);
       }
     }
   }
@@ -274,6 +360,7 @@ class _MainNavigationState extends State<MainNavigation>
             "";
         final Map<String, dynamic>? defaultVariation =
             variations.isNotEmpty ? variations.first : null;
+        final int takeAwayCharge = _takeAwayChargeFromItem(item, nestedMap);
 
         list.add({
           "id": id,
@@ -290,6 +377,7 @@ class _MainNavigationState extends State<MainNavigation>
           "variations": variations,
           "variation": defaultVariation,
           "modifiers": modifiers,
+          "take_away_charge": takeAwayCharge,
         });
       }
     }
@@ -297,10 +385,7 @@ class _MainNavigationState extends State<MainNavigation>
   }
 
   int getQtyForProduct(int productId) {
-    return cart.fold<int>(
-      0,
-      (sum, item) => sum + (item["id"] == productId ? _asInt(item["qty"]) : 0),
-    );
+    return _cartQtyByProduct[productId] ?? 0;
   }
 
   bool _sameModifiers(List<dynamic>? a, List<dynamic>? b) {
@@ -324,6 +409,36 @@ class _MainNavigationState extends State<MainNavigation>
     if (v is int) return v;
     if (v is num) return v.toInt();
     return int.tryParse(v?.toString() ?? "") ?? 0;
+  }
+
+  void _rebuildCartSummary() {
+    _cartQtyByProduct.clear();
+    displayedItems = 0;
+    displayedPrice = 0;
+
+    for (final item in cart) {
+      final id = _asInt(item["id"]);
+      final qty = _asInt(item["qty"]);
+      if (id > 0 && qty > 0) {
+        _cartQtyByProduct[id] = (_cartQtyByProduct[id] ?? 0) + qty;
+      }
+      displayedItems += qty;
+      displayedPrice += _asInt(item["price"]) * qty;
+    }
+  }
+
+  int _effectiveUnitPrice(
+    int basePrice,
+    Map<String, dynamic>? variation,
+    List<Map<String, dynamic>> modifiers,
+  ) {
+    final variantPrice = variation == null ? null : _asInt(variation["price"]);
+    final modifiersPrice = modifiers.fold<int>(
+      0,
+      (sum, modifier) => sum + _asInt(modifier["price"]),
+    );
+    return (variation == null ? basePrice : (variantPrice ?? 0)) +
+        modifiersPrice;
   }
 
   UniqueKey homeKey = UniqueKey();
@@ -440,6 +555,7 @@ class _MainNavigationState extends State<MainNavigation>
     Rect? imageRect,
   ) {
     final int takeAwayCharge = _takeAwayChargeForId(id);
+    final int unitPrice = _effectiveUnitPrice(price, variation, modifiers);
     final idx = cart.indexWhere(
       (c) =>
           c["id"] == id &&
@@ -447,10 +563,7 @@ class _MainNavigationState extends State<MainNavigation>
           _sameModifiers(c["modifiers"], modifiers),
     );
 
-    final totalForProduct = cart.fold<int>(
-      0,
-      (sum, item) => sum + (item["id"] == id ? _asInt(item["qty"]) : 0),
-    );
+    final totalForProduct = getQtyForProduct(id);
     final delta = qty - totalForProduct;
 
     if (delta != 0) {
@@ -461,6 +574,7 @@ class _MainNavigationState extends State<MainNavigation>
         } else {
           cart[idx]["qty"] = newEntryQty;
           cart[idx]["category"] ??= category;
+          cart[idx]["price"] = unitPrice;
           cart[idx]["take_away_charge"] = takeAwayCharge;
         }
       } else if (delta > 0) {
@@ -468,7 +582,7 @@ class _MainNavigationState extends State<MainNavigation>
           "id": id,
           "name": name,
           "category": category,
-          "price": price,
+          "price": unitPrice,
           "image": image,
           "qty": delta,
           "variation": variation,
@@ -484,21 +598,14 @@ class _MainNavigationState extends State<MainNavigation>
           } else {
             cart[anyIdx]["qty"] = newEntryQty;
             cart[anyIdx]["category"] ??= category;
+            cart[anyIdx]["price"] = unitPrice;
             cart[anyIdx]["take_away_charge"] = takeAwayCharge;
           }
         }
       }
     }
 
-    displayedItems = cart.fold<int>(
-      0,
-      (sum, item) => sum + _asInt(item["qty"]),
-    );
-
-    displayedPrice = cart.fold<int>(
-      0,
-      (sum, item) => sum + (_asInt(item["price"]) * _asInt(item["qty"])),
-    );
+    _rebuildCartSummary();
 
     // Flying add-to-cart animation removed per request.
 
@@ -606,8 +713,10 @@ class _MainNavigationState extends State<MainNavigation>
                 Navigator.pop(context);
                 setState(() {
                   cart.clear();
+                  _cartQtyByProduct.clear();
                   displayedItems = 0;
                   displayedPrice = 0;
+                  _refreshRecommendations();
                   homeKey = UniqueKey();
                   bounceActive = false;
                   _stopCartAnimations();
@@ -872,15 +981,8 @@ class _MainNavigationState extends State<MainNavigation>
                   onBack: () => setState(() => currentIndex = 0),
                   onCartUpdated: () {
                     setState(() {
+                      _rebuildCartSummary();
                       _refreshRecommendations();
-                      displayedItems = cart.fold(
-                        0,
-                        (s, i) => s + _asInt(i["qty"]),
-                      );
-                      displayedPrice = cart.fold(
-                        0,
-                        (s, i) => s + (_asInt(i["qty"]) * _asInt(i["price"])),
-                      );
                       if (displayedItems == 0) {
                         bounceActive = false;
                         if (_viewCartController.isAnimating) {
@@ -1160,19 +1262,7 @@ class _MainNavigationState extends State<MainNavigation>
     for (final item in cart) {
       final int qty = item["qty"] ?? 1;
 
-      final int basePrice = item["price"] ?? 0;
-
-      // variation price (safe)
-      final int variationPrice = item["variation"]?["price"] ?? 0;
-
-      // modifiers total price (safe)
-      final int modifiersPrice = (item["modifiers"] as List?)?.fold<int>(
-            0,
-            (sum, m) => sum + ((m["price"] ?? 0) as int),
-          ) ??
-          0;
-
-      total += (basePrice + variationPrice + modifiersPrice) * qty;
+      total += (_asInt(item["price"]) * qty);
     }
 
     return total;

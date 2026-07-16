@@ -98,7 +98,10 @@ class _WebQrMenuEntryScreenState extends State<WebQrMenuEntryScreen> {
           restaurant: restaurant,
           kioskSettings: kioskSettings,
         );
-      } catch (_) {
+      } catch (e) {
+        if (KioskApi.isBootstrapForbiddenError(e)) {
+          throw Exception(KioskApi.bootstrapDisabledHelpMessage(e));
+        }
         unawaited(_refreshRestaurantMetaInBackground());
       }
 
@@ -115,6 +118,9 @@ class _WebQrMenuEntryScreenState extends State<WebQrMenuEntryScreen> {
         ),
       );
     } catch (e) {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.remove("restaurant_id");
+      await prefs.setBool("kiosk_setup_done", false);
       if (!mounted) return;
       setState(() {
         _errorMessage = _extractErrorMessage(e);
@@ -203,74 +209,11 @@ class _WebQrMenuEntryScreenState extends State<WebQrMenuEntryScreen> {
   Map<String, bool> _resolveOrderTypeAvailability(
     Map<String, dynamic>? restaurant,
     Map<String, dynamic>? kioskSettings,
-  ) {
-    bool? dineIn;
-    bool? pickup;
-
-    final sources = [kioskSettings, restaurant];
-    for (final src in sources) {
-      if (src == null) continue;
-
-      final listVal = _readList(src, const [
-        "order_types",
-        "orderTypes",
-        "available_order_types",
-        "order_type_list",
-        "orderTypeList",
-        "order_type",
-        "orderType",
-      ]);
-      if (listVal != null && listVal.isNotEmpty) {
-        final types =
-            listVal.map(_normalizeOrderType).whereType<String>().toSet();
-        if (types.any((t) => t == "dine_in" || t == "dinein")) {
-          dineIn = true;
-        }
-        if (types.any(
-          (t) => t == "pickup" || t == "takeaway" || t == "take_away",
-        )) {
-          pickup = true;
-        }
-        if (dineIn != true) dineIn = false;
-        if (pickup != true) pickup = false;
-      }
-
-      dineIn ??= _readBool(src, const [
-        "dine_in",
-        "dinein",
-        "eat_here",
-        "eatHere",
-        "is_dine_in",
-        "dine_in_enabled",
-        "eat_here_enabled",
-        "allow_dine_in_orders",
-      ]);
-
-      pickup ??= _readBool(src, const [
-        "pickup",
-        "takeaway",
-        "take_away",
-        "takeAway",
-        "is_pickup",
-        "pickup_enabled",
-        "takeaway_enabled",
-        "take_away_enabled",
-        "allow_customer_pickup_orders",
-      ]);
-
-      final allowCustomerOrders = _readBool(src, const [
-        "allow_customer_orders",
-        "customer_orders_enabled",
-        "allow_orders",
-      ]);
-      if (allowCustomerOrders == false) {
-        dineIn = false;
-        pickup = false;
-      }
-    }
-
-    return {"dine_in": dineIn ?? true, "pickup": pickup ?? true};
-  }
+  ) =>
+      KioskRestaurantMeta.resolveOrderTypeAvailability(
+        restaurant: restaurant,
+        kioskSettings: kioskSettings,
+      );
 
   String? _extractTaxId(
     Map<String, dynamic>? restaurant,
@@ -287,35 +230,6 @@ class _WebQrMenuEntryScreenState extends State<WebQrMenuEntryScreen> {
           src["gst"];
       if (v != null && v.toString().trim().isNotEmpty) {
         return v.toString().trim();
-      }
-    }
-    return null;
-  }
-
-  bool? _readBool(Map<String, dynamic> src, List<String> keys) {
-    for (final k in keys) {
-      if (!src.containsKey(k)) continue;
-      final v = src[k];
-      if (v is bool) return v;
-      if (v is num) return v > 0;
-      if (v is String) {
-        final s = v.trim().toLowerCase();
-        if (s == "true" || s == "1" || s == "yes") return true;
-        if (s == "false" || s == "0" || s == "no") return false;
-      }
-    }
-    return null;
-  }
-
-  List<String>? _readList(Map<String, dynamic> src, List<String> keys) {
-    for (final k in keys) {
-      if (!src.containsKey(k)) continue;
-      final v = src[k];
-      if (v is List) {
-        return v.map((e) => e.toString()).toList();
-      }
-      if (v is String && v.isNotEmpty) {
-        return v.split(",").map((e) => e.trim()).toList();
       }
     }
     return null;

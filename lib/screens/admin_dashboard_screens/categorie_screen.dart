@@ -3,7 +3,9 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:api_selfxo_project/api/admin_api.dart';
 import 'package:api_selfxo_project/background_image/background_image.dart';
+import 'package:api_selfxo_project/core/image_url.dart';
 import 'package:api_selfxo_project/core/kiosk_memory_service.dart';
+import 'package:api_selfxo_project/widget/app_network_image.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 class CategoriesScreen extends StatefulWidget {
@@ -869,8 +871,22 @@ class _CategoriesScreenState extends State<CategoriesScreen> {
     final cat = filteredCategories[index];
     final bool isActive = _isCategoryActive(cat);
     final bool isTablet = MediaQuery.of(context).size.width > 600;
-    final String imageUrl =
-        cat["category_image"] ?? cat["item_photo_url"] ?? "";
+    final String imageUrl = firstImageUrlFromMap(
+      cat,
+      keys: const [
+        "category_image",
+        "category_image_url",
+        "image_url",
+        "imageUrl",
+        "image",
+        "photo_url",
+        "photoUrl",
+        "photo",
+        "thumbnail",
+        "thumb",
+        "img",
+      ],
+    );
     final String type = _categoryType(cat);
 
     return Container(
@@ -919,12 +935,12 @@ class _CategoriesScreenState extends State<CategoriesScreen> {
                               final cacheHeight = (constraints.maxHeight * dpr)
                                   .round()
                                   .clamp(1, 4096);
-                              return Image.network(
-                                imageUrl,
+                              return AppNetworkImage(
+                                url: imageUrl,
                                 fit: BoxFit.cover,
                                 cacheWidth: cacheWidth,
                                 cacheHeight: cacheHeight,
-                                errorBuilder: (_, __, ___) => Container(
+                                fallback: Container(
                                   color: Colors.grey[100],
                                   child:
                                       const Icon(Icons.dinner_dining_rounded),
