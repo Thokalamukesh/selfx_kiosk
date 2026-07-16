@@ -601,6 +601,9 @@ class PrinterService {
       }
       printObjects = withImages;
     }
+    if (requireBothCopies) {
+      printObjects = printObjects.map(_withHalfCutsBeforeMoreContent).toList();
+    }
     if (!backendAlreadyHasBothCopies &&
         !backendHasDuplicateCopy &&
         requireBothCopies &&
@@ -2684,6 +2687,56 @@ class PrinterService {
     return out;
   }
 
+  List<dynamic> _withHalfCutsBeforeMoreContent(List<dynamic> printObject) {
+    final out = _clonePrintObject(printObject);
+    var changed = false;
+    for (var i = 0; i < out.length; i++) {
+      final entry = out[i];
+      if (entry is! Map || !_isCutCommand(entry)) continue;
+      if (!_hasPrintableContentAfter(out, i)) continue;
+      final updated = Map<dynamic, dynamic>.from(entry);
+      updated['type'] = 'halfCutPaper';
+      out[i] = updated;
+      changed = true;
+    }
+    if (!changed) return out;
+    return _withTrailingCut(out, halfCut: false);
+  }
+
+  bool _isCutCommand(Map entry) {
+    final type = entry['type']?.toString().trim().toLowerCase() ?? '';
+    return type == 'cut' ||
+        type == 'fullcutpaper' ||
+        type == 'halfcutpaper' ||
+        type == 'full_cut_paper' ||
+        type == 'half_cut_paper';
+  }
+
+  bool _hasPrintableContentAfter(List<dynamic> entries, int index) {
+    for (var i = index + 1; i < entries.length; i++) {
+      final entry = entries[i];
+      if (entry is! Map) continue;
+      final type = entry['type']?.toString().trim().toLowerCase() ?? '';
+      if (type == 'text') {
+        final text = entry['text']?.toString().trim() ?? '';
+        if (text.isNotEmpty) return true;
+      }
+      if (type == 'row') {
+        final left = entry['left']?.toString().trim() ?? '';
+        final right = entry['right']?.toString().trim() ?? '';
+        if (left.isNotEmpty || right.isNotEmpty) return true;
+      }
+      if (type == 'image' ||
+          type == 'logo' ||
+          type == 'qr' ||
+          type == 'qrcode' ||
+          type == 'qr_code') {
+        return true;
+      }
+    }
+    return false;
+  }
+
   bool _isFooterImage(Map entry) {
     final source = [
       entry['label'],
@@ -3595,8 +3648,12 @@ List<Map<String, dynamic>> _buildReceiptIsolate(
   if (allowCustomerCopy) {
     buildReceipt(parcelCopy: false);
   }
-  if (allowCounterCopy && (isTakeAway() || mode == "counter")) {
+  if (allowCustomerCopy && allowCounterCopy) {
     lines.add({'type': 'feedLine'});
+    lines.add({'type': 'feedLine'});
+    lines.add({'type': 'halfCutPaper'});
+  }
+  if (allowCounterCopy) {
     buildReceipt(parcelCopy: true);
   }
 
@@ -4366,11 +4423,16 @@ List<Map<String, dynamic>> _buildUsbReceiptIsolate(
   if (allowCustomerCopy) {
     buildReceipt(parcelCopy: false);
   }
-  if (allowCounterCopy && (isTakeAway() || mode == "counter")) {
+  if (allowCustomerCopy && allowCounterCopy) {
     lines.add({'type': 'feedLine'});
+    lines.add({'type': 'feedLine'});
+    lines.add({'type': 'halfCutPaper'});
+  }
+  if (allowCounterCopy) {
     buildReceipt(parcelCopy: true);
   }
 
+  lines.add({'type': 'feedLine'});
   lines.add({'type': 'fullCutPaper'});
   return lines;
 }
