@@ -264,7 +264,7 @@ class _PaymentSuccessDialogState extends State<PaymentSuccessDialog>
         orderDate: orderDate,
         orderType: widget.orderType,
         orderNumber: backendOrderNumber,
-        backendOnly: false,
+        backendOnly: true,
         preserveBackendPrintFormat: true,
         requireBothCopies: printBothCopies,
         counterCopyLabel: printBothCopies,
