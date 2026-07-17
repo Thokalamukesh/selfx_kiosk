@@ -205,6 +205,20 @@ class PrinterService {
     return [...header, ...cloned];
   }
 
+  List<dynamic> _withoutQrCommands(List<dynamic> printObject) {
+    final out = <dynamic>[];
+    for (final entry in printObject) {
+      if (entry is Map) {
+        final type = entry['type']?.toString().trim().toLowerCase() ?? '';
+        if (type == 'qr' || type == 'qrcode' || type == 'qr_code') {
+          continue;
+        }
+      }
+      out.add(entry);
+    }
+    return out;
+  }
+
   bool _hasCounterLabel(List<dynamic> printObject) {
     for (final entry in printObject) {
       if (entry is Map && entry['type'] == 'text') {
@@ -558,6 +572,7 @@ class PrinterService {
     final rawCounterCopies =
         rawPrintObjects.where(_isRawDuplicatePrintObject).toList();
     final selectedRawPrintObjects = <List<dynamic>>[];
+    final generatedCounterCopyIndexes = <int>{};
     final backendAlreadyHasBothCopies = requireBothCopies &&
         _backendPrintObjectAlreadyHasBothCopies(
           rawPrintObjects,
@@ -579,6 +594,9 @@ class PrinterService {
       selectedRawPrintObjects
         ..add(customer)
         ..add(counter);
+      if (rawCounterCopies.isEmpty) {
+        generatedCounterCopyIndexes.add(1);
+      }
     } else {
       selectedRawPrintObjects.add(
         rawCustomerCopies.isNotEmpty
@@ -594,15 +612,19 @@ class PrinterService {
             ))
         .where((object) => object.isNotEmpty)
         .toList();
+    if (generatedCounterCopyIndexes.isNotEmpty) {
+      for (final index in generatedCounterCopyIndexes) {
+        if (index >= 0 && index < printObjects.length) {
+          printObjects[index] = _withoutQrCommands(printObjects[index]);
+        }
+      }
+    }
     if (type == PrinterType.usb) {
       final withImages = <List<dynamic>>[];
       for (final object in printObjects) {
         withImages.add(await _embedUsbImageBytes(object));
       }
       printObjects = withImages;
-    }
-    if (requireBothCopies) {
-      printObjects = printObjects.map(_withHalfCutsBeforeMoreContent).toList();
     }
     if (!backendAlreadyHasBothCopies &&
         !backendHasDuplicateCopy &&
@@ -2442,19 +2464,6 @@ class PrinterService {
         'nLan': _toInt(options['nLan']) ?? 0,
         'nOrgx': _toInt(options['nOrgx']) ?? 0,
       };
-      final previousTextIndex = normalized.isNotEmpty &&
-              normalized.last is Map &&
-              (normalized.last as Map)['type'] == 'feedLine'
-          ? normalized.length - 2
-          : normalized.length - 1;
-      if (previousTextIndex >= 0) {
-        final previous = normalized[previousTextIndex];
-        if (previous is Map && previous['type'] == 'text') {
-          final previousText =
-              previous['text']?.toString().trim().toLowerCase();
-          if (previousText == trimmed.trim().toLowerCase()) return;
-        }
-      }
       normalized.add({
         'type': 'text',
         'text': trimmed,
@@ -2526,7 +2535,6 @@ class PrinterService {
       if (type == 'text') {
         final text = entry['text']?.toString() ?? '';
         if (text.trim().isEmpty) continue;
-        if (_isDuplicateCopyText(text)) continue;
         addText(text, _backendTextOptions(entry, text: text));
         if (_isReceiptFooterText(text)) {
           footerStarted = true;
@@ -2546,9 +2554,6 @@ class PrinterService {
       }
 
       if (type == 'divider' || type == 'line' || type == 'dottedline') {
-        if (!_hasPrintableBackendContent(normalized)) {
-          continue;
-        }
         normalized.add({'type': 'dottedLine'});
         continue;
       }
@@ -2561,10 +2566,21 @@ class PrinterService {
         continue;
       }
 
-      if (type == 'cut' || type == 'fullcutpaper' || type == 'halfcutpaper') {
+      if (type == 'cut' ||
+          type == 'fullcutpaper' ||
+          type == 'halfcutpaper' ||
+          type == 'partialcutpaper' ||
+          type == 'full_cut_paper' ||
+          type == 'half_cut_paper' ||
+          type == 'partial_cut_paper') {
         final mode = entry['mode']?.toString().toLowerCase() ?? '';
         normalized.add({
-          'type': mode == 'half' || type == 'halfcutpaper'
+          'type': mode == 'half' ||
+                  mode == 'partial' ||
+                  type == 'halfcutpaper' ||
+                  type == 'partialcutpaper' ||
+                  type == 'half_cut_paper' ||
+                  type == 'partial_cut_paper'
               ? 'halfCutPaper'
               : 'fullCutPaper',
         });
@@ -2685,56 +2701,6 @@ class PrinterService {
     out.add({'type': 'feedLine'});
     out.add({'type': halfCut ? 'halfCutPaper' : 'fullCutPaper'});
     return out;
-  }
-
-  List<dynamic> _withHalfCutsBeforeMoreContent(List<dynamic> printObject) {
-    final out = _clonePrintObject(printObject);
-    var changed = false;
-    for (var i = 0; i < out.length; i++) {
-      final entry = out[i];
-      if (entry is! Map || !_isCutCommand(entry)) continue;
-      if (!_hasPrintableContentAfter(out, i)) continue;
-      final updated = Map<dynamic, dynamic>.from(entry);
-      updated['type'] = 'halfCutPaper';
-      out[i] = updated;
-      changed = true;
-    }
-    if (!changed) return out;
-    return _withTrailingCut(out, halfCut: false);
-  }
-
-  bool _isCutCommand(Map entry) {
-    final type = entry['type']?.toString().trim().toLowerCase() ?? '';
-    return type == 'cut' ||
-        type == 'fullcutpaper' ||
-        type == 'halfcutpaper' ||
-        type == 'full_cut_paper' ||
-        type == 'half_cut_paper';
-  }
-
-  bool _hasPrintableContentAfter(List<dynamic> entries, int index) {
-    for (var i = index + 1; i < entries.length; i++) {
-      final entry = entries[i];
-      if (entry is! Map) continue;
-      final type = entry['type']?.toString().trim().toLowerCase() ?? '';
-      if (type == 'text') {
-        final text = entry['text']?.toString().trim() ?? '';
-        if (text.isNotEmpty) return true;
-      }
-      if (type == 'row') {
-        final left = entry['left']?.toString().trim() ?? '';
-        final right = entry['right']?.toString().trim() ?? '';
-        if (left.isNotEmpty || right.isNotEmpty) return true;
-      }
-      if (type == 'image' ||
-          type == 'logo' ||
-          type == 'qr' ||
-          type == 'qrcode' ||
-          type == 'qr_code') {
-        return true;
-      }
-    }
-    return false;
   }
 
   bool _isFooterImage(Map entry) {
@@ -2986,7 +2952,7 @@ class PrinterService {
   }) {
     final width = lineWidth.clamp(24, 80);
     final l = left.trim();
-    final r = _formatBackendRowRight(left, right);
+    final r = _formatBackendRowRight(right);
     if (r.isEmpty) return l;
     if (l.isEmpty) return r.padLeft(width);
     final rightWidth = r.length.clamp(6, 12).toInt();
@@ -3005,38 +2971,10 @@ class PrinterService {
     return lines.join('\n');
   }
 
-  String _formatBackendRowRight(String left, String right) {
+  String _formatBackendRowRight(String right) {
+    // Backend/admin controls row amount text. Only sanitize unsupported glyphs.
     final value = _printerSafeText(right).trim();
-    if (value.isEmpty) return value;
-    final lowerLeft = left.trim().toLowerCase();
-    final looksLikeAmountLabel = lowerLeft.startsWith(RegExp(r'\d+\s*x\b')) ||
-        lowerLeft.contains('subtotal') ||
-        lowerLeft.contains('total') ||
-        lowerLeft.contains('tax') ||
-        lowerLeft.contains('discount') ||
-        lowerLeft.contains('charge') ||
-        lowerLeft.contains('amount') ||
-        lowerLeft.contains('price') ||
-        lowerLeft.contains('payment') ||
-        lowerLeft.contains('parcel') ||
-        lowerLeft.contains('service');
-    if (!looksLikeAmountLabel) return value;
-    if (RegExp(r'^(?:-)?(?:rs|inr)\s*\d', caseSensitive: false)
-        .hasMatch(value)) {
-      return value.replaceFirstMapped(
-        RegExp(r'^(?:-)?(?:rs|inr)\s*', caseSensitive: false),
-        (match) {
-          final raw = match.group(0) ?? '';
-          final negative = raw.trimLeft().startsWith('-');
-          return negative ? '-Rs ' : 'Rs ';
-        },
-      );
-    }
-    if (!RegExp(r'^-?\d+(?:\.\d{1,2})?$').hasMatch(value)) return value;
-    if (value.startsWith('-')) {
-      return '-Rs ${value.substring(1)}';
-    }
-    return 'Rs $value';
+    return value;
   }
 
   dynamic _sanitizeNullTokens(dynamic value) {

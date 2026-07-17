@@ -158,7 +158,11 @@ class AdminApi {
   }
 
   Future<Response> createCategory(Map<String, dynamic> body) async {
-    return _notSupported("kiosk/admin/categories");
+    final dio = await DioClient.getAdminDio();
+    final payload = _categoryPayload(body);
+    final res = await dio.post("kiosk/admin/menu-categories", data: payload);
+    _ensureSuccess(res);
+    return _copyResponse(res, _normalizeCategoryUpdate(res.data));
   }
 
   Future<Response> updateItem(String id, Map<String, dynamic> body) async {
@@ -177,11 +181,31 @@ class AdminApi {
   }
 
   Future<Response> cancelOrder(String id) async {
-    return _notSupported("kiosk/admin/orders/$id/cancel");
+    final dio = await DioClient.getAdminDio();
+    final orderNumber = _resolveOrderNumber(id);
+    try {
+      final res = await dio.post("kiosk/admin/orders/$orderNumber/cancel");
+      _ensureSuccess(res);
+      return res;
+    } on DioException catch (e) {
+      final status = e.response?.statusCode ?? 0;
+      if (status != 404 && status != 405) rethrow;
+    }
+
+    final res = await dio.patch(
+      "kiosk/admin/orders/$orderNumber/status",
+      data: {"status": "cancelled"},
+    );
+    _ensureSuccess(res);
+    return res;
   }
 
   Future<Response> createItem(Map<String, dynamic> body) async {
-    return _notSupported("kiosk/admin/menu-items");
+    final dio = await DioClient.getAdminDio();
+    final payload = _itemPayload(body);
+    final res = await dio.post("kiosk/admin/menu-items", data: payload);
+    _ensureSuccess(res);
+    return _copyResponse(res, _normalizeItemUpdate(res.data));
   }
 
   Future<Response> getOrderSummary({
@@ -317,6 +341,8 @@ class AdminApi {
       items.addAll(normalizedItems);
       categories.add({
         ...category,
+        "id": category["id"] ?? category["category_id"],
+        "category_id": category["id"] ?? category["category_id"],
         "category_name": categoryName,
         "category_image": categoryImage,
         "items": normalizedItems,
@@ -326,6 +352,11 @@ class AdminApi {
     return {
       ...source,
       "categories": categories,
+      "categoryList": categories,
+      "menus": source["menus"] is List ? source["menus"] : const [],
+      "time_slots":
+          source["time_slots"] is List ? source["time_slots"] : const [],
+      "modifiers": source["modifiers"] is List ? source["modifiers"] : const [],
       "items": items,
       "data": items,
     };
@@ -431,7 +462,13 @@ class AdminApi {
 
   Map<String, dynamic> _normalizeItemUpdate(dynamic raw) {
     final root = _map(raw);
-    final item = _map(root["item"]);
+    final data = _map(root["data"]);
+    final item = _firstNonEmptyMap([
+      root["item"],
+      data["item"],
+      data,
+      root,
+    ]);
     return {
       ...root,
       "ok": root["ok"] ?? true,
@@ -439,6 +476,26 @@ class AdminApi {
         ...item,
         "item_name": item["item_name"] ?? item["name"],
         "item_price": item["item_price"] ?? item["price"],
+      },
+    };
+  }
+
+  Map<String, dynamic> _normalizeCategoryUpdate(dynamic raw) {
+    final root = _map(raw);
+    final data = _map(root["data"]);
+    final category = _firstNonEmptyMap([
+      root["category"],
+      data["category"],
+      data,
+      root,
+    ]);
+    return {
+      ...root,
+      "ok": root["ok"] ?? true,
+      "category": {
+        ...category,
+        "category_id": category["category_id"] ?? category["id"],
+        "category_name": category["category_name"] ?? category["name"],
       },
     };
   }
@@ -456,6 +513,28 @@ class AdminApi {
     if (price != null) payload["price"] = _numOrOriginal(price);
     if (isAvailable != null) {
       payload["is_available"] = _boolValue(isAvailable);
+    }
+    _copyPayloadKeys(body, payload, const [
+      "menu_id",
+      "menu_category_id",
+      "item_category_id",
+      "category_id",
+      "branch_id",
+      "restaurant_id",
+      "description",
+      "type",
+      "take_away_charge",
+      "parcel_charge",
+      "has_variations",
+      "has_variation",
+      "variations",
+      "modifier_ids",
+      "time_slot_ids",
+    ]);
+    if (!payload.containsKey("menu_category_id")) {
+      payload["menu_category_id"] = body["menu_category_id"] ??
+          body["item_category_id"] ??
+          body["category_id"];
     }
 
     for (final imageKey in const [
@@ -497,6 +576,15 @@ class AdminApi {
     }
     if (description != null) payload["description"] = description;
     if (isActive != null) payload["is_active"] = _boolValue(isActive);
+    _copyPayloadKeys(body, payload, const [
+      "menu_id",
+      "branch_id",
+      "restaurant_id",
+      "type",
+      "time_slot_ids",
+      "sort_order",
+      "display_order",
+    ]);
 
     for (final imageKey in const [
       "image",
@@ -515,6 +603,19 @@ class AdminApi {
     }
 
     return payload.isEmpty ? body : payload;
+  }
+
+  void _copyPayloadKeys(
+    Map<String, dynamic> source,
+    Map<String, dynamic> target,
+    List<String> keys,
+  ) {
+    for (final key in keys) {
+      if (!source.containsKey(key)) continue;
+      final value = source[key];
+      if (value == null) continue;
+      target[key] = value;
+    }
   }
 
   dynamic _numOrOriginal(dynamic value) {
@@ -551,17 +652,6 @@ class AdminApi {
         text == "available" ||
         text == "in_stock" ||
         text == "in stock";
-  }
-
-  Response _notSupported(String path) {
-    return Response(
-      requestOptions: RequestOptions(path: path),
-      statusCode: 501,
-      data: {
-        "ok": false,
-        "message": "This action is not available in the current kiosk API.",
-      },
-    );
   }
 
   Response _copyResponse(Response source, dynamic data) {
