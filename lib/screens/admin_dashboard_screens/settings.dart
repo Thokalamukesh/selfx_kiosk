@@ -27,6 +27,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
   bool isLoading = true;
   bool isCheckingPrinter = false;
   bool _savingKioskName = false;
+  bool _savingDisplaySettings = false;
+  bool _showItemImages = true;
+  bool _showCategoryImages = true;
+  bool _printReceiptOnComplete = true;
+  String _taxBreakdownDisplay = "always";
+  String _variantPriceDisplay = "from_amount";
 
   String restaurantName = "Loading...";
   String kioskName = "Loading...";
@@ -171,8 +177,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
       );
 
       if (!mounted) return;
+      await _storeDisplaySettings(settings);
       setState(() {
         _settingsData = settings;
+        _applyDisplaySettings(settings, prefs);
         restaurantName = KioskRestaurantMeta.resolveRestaurantName(
           restaurant: restaurant,
           kioskSettings: settings,
@@ -230,6 +238,87 @@ class _SettingsScreenState extends State<SettingsScreen> {
     await _loadNativeLogs();
   }
 
+  void _applyDisplaySettings(
+    Map<String, dynamic> settings,
+    SharedPreferences prefs,
+  ) {
+    _showItemImages = _boolSetting(
+      settings["show_item_images"] ?? settings["showItemImages"],
+      fallback: prefs.getBool(KioskRestaurantMeta.showItemImagesKey) ?? true,
+    );
+    _showCategoryImages = _boolSetting(
+      settings["show_category_images"] ?? settings["showCategoryImages"],
+      fallback:
+          prefs.getBool(KioskRestaurantMeta.showCategoryImagesKey) ?? true,
+    );
+    _printReceiptOnComplete = _boolSetting(
+      settings["print_receipt_on_complete"] ??
+          settings["printReceiptOnComplete"],
+      fallback: prefs.getBool("print_receipt_on_complete") ?? true,
+    );
+    _taxBreakdownDisplay = (settings["tax_breakdown_display"] ??
+            settings["taxBreakdownDisplay"] ??
+            prefs.getString(KioskRestaurantMeta.taxBreakdownDisplayKey) ??
+            "always")
+        .toString();
+    _variantPriceDisplay = (settings["variant_price_display"] ??
+            settings["variantPriceDisplay"] ??
+            prefs.getString(KioskRestaurantMeta.variantPriceDisplayKey) ??
+            "from_amount")
+        .toString();
+  }
+
+  bool _boolSetting(dynamic value, {required bool fallback}) {
+    if (value is bool) return value;
+    if (value is num) return value != 0;
+    if (value == null) return fallback;
+    final text = value.toString().trim().toLowerCase();
+    if (text == "1" || text == "true" || text == "yes" || text == "on") {
+      return true;
+    }
+    if (text == "0" || text == "false" || text == "no" || text == "off") {
+      return false;
+    }
+    return fallback;
+  }
+
+  Future<void> _storeDisplaySettings(Map<String, dynamic> settings) async {
+    final prefs = await SharedPreferences.getInstance();
+    final showItem = _boolSetting(
+      settings["show_item_images"] ?? settings["showItemImages"],
+      fallback: prefs.getBool(KioskRestaurantMeta.showItemImagesKey) ?? true,
+    );
+    final showCategory = _boolSetting(
+      settings["show_category_images"] ?? settings["showCategoryImages"],
+      fallback:
+          prefs.getBool(KioskRestaurantMeta.showCategoryImagesKey) ?? true,
+    );
+    final printReceipt = _boolSetting(
+      settings["print_receipt_on_complete"] ??
+          settings["printReceiptOnComplete"],
+      fallback: prefs.getBool("print_receipt_on_complete") ?? true,
+    );
+    await prefs.setBool(KioskRestaurantMeta.showItemImagesKey, showItem);
+    await prefs.setBool(
+      KioskRestaurantMeta.showCategoryImagesKey,
+      showCategory,
+    );
+    await prefs.setBool("print_receipt_on_complete", printReceipt);
+    final tax =
+        (settings["tax_breakdown_display"] ?? settings["taxBreakdownDisplay"])
+            ?.toString();
+    if (tax != null && tax.isNotEmpty) {
+      await prefs.setString(KioskRestaurantMeta.taxBreakdownDisplayKey, tax);
+    }
+    final variant =
+        (settings["variant_price_display"] ?? settings["variantPriceDisplay"])
+            ?.toString();
+    if (variant != null && variant.isNotEmpty) {
+      await prefs.setString(
+          KioskRestaurantMeta.variantPriceDisplayKey, variant);
+    }
+  }
+
   // ================= PRINTER STATUS =================
   Future<void> _checkPrinterStatus() async {
     if (isCheckingPrinter) return;
@@ -268,6 +357,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   Future<void> _selectUsbPrinter() async {
     final printers = await printerService.getUsbPrinters();
+    if (!mounted) return;
 
     if (printers.isEmpty) {
       _showSnackBar("No USB printers found", Colors.red);
@@ -281,7 +371,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     } else {
       await showDialog(
         context: context,
-        builder: (_) => AlertDialog(
+        builder: (dialogContext) => AlertDialog(
           title: const Text("Select USB Printer"),
           content: SizedBox(
             width: double.maxFinite,
@@ -298,7 +388,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   ),
                   onTap: () {
                     selectedPrinter = p;
-                    Navigator.pop(context);
+                    Navigator.pop(dialogContext);
                   },
                 );
               },
@@ -329,7 +419,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     try {
       await showDialog(
         context: context,
-        builder: (_) => AlertDialog(
+        builder: (dialogContext) => AlertDialog(
           title: const Text("Epson Printer IP"),
           content: TextField(
             controller: controller,
@@ -337,7 +427,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ),
           actions: [
             TextButton(
-              onPressed: () => Navigator.pop(context),
+              onPressed: () => Navigator.pop(dialogContext),
               child: const Text("Cancel"),
             ),
             ElevatedButton(
@@ -347,7 +437,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
                 final prefs = await SharedPreferences.getInstance();
                 await prefs.setString("epson_ip", ip);
-                Navigator.pop(context);
+                if (dialogContext.mounted) {
+                  Navigator.pop(dialogContext);
+                }
               },
               child: const Text("Save"),
             ),
@@ -443,6 +535,50 @@ class _SettingsScreenState extends State<SettingsScreen> {
       if (mounted) {
         setState(() => _savingKioskName = false);
       }
+    }
+  }
+
+  Future<void> _saveDisplaySettings() async {
+    if (_savingDisplaySettings) return;
+    setState(() => _savingDisplaySettings = true);
+    final body = <String, dynamic>{
+      "show_item_images": _showItemImages,
+      "show_category_images": _showCategoryImages,
+      "print_receipt_on_complete": _printReceiptOnComplete,
+      "tax_breakdown_display": _taxBreakdownDisplay,
+      "variant_price_display": _variantPriceDisplay,
+    };
+    try {
+      await AdminApi().updateSettings(body);
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool(
+        KioskRestaurantMeta.showItemImagesKey,
+        _showItemImages,
+      );
+      await prefs.setBool(
+        KioskRestaurantMeta.showCategoryImagesKey,
+        _showCategoryImages,
+      );
+      await prefs.setBool(
+        "print_receipt_on_complete",
+        _printReceiptOnComplete,
+      );
+      await prefs.setString(
+        KioskRestaurantMeta.taxBreakdownDisplayKey,
+        _taxBreakdownDisplay,
+      );
+      await prefs.setString(
+        KioskRestaurantMeta.variantPriceDisplayKey,
+        _variantPriceDisplay,
+      );
+      _settingsData ??= {};
+      _settingsData!.addAll(body);
+      OrderUtils.notifyInfoUpdated();
+      _showSnackBar("Display settings updated", Colors.green);
+    } catch (_) {
+      _showSnackBar("Failed to update display settings", Colors.red);
+    } finally {
+      if (mounted) setState(() => _savingDisplaySettings = false);
     }
   }
 
@@ -565,7 +701,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         borderRadius: BorderRadius.circular(16),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(0.08),
+            color: Colors.black.withValues(alpha: 0.08),
             blurRadius: 14,
             offset: const Offset(0, 8),
           ),
@@ -622,6 +758,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
               ),
             ),
           ),
+          const SizedBox(height: 18),
+          _displaySettingsSection(),
           const SizedBox(height: 18),
           const Text(
             "Select Printer",
@@ -702,9 +840,144 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
+  Widget _displaySettingsSection() {
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: const Color(0xFFFFFBF7),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: const Color(0xFFEED9BC)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          const Text(
+            "Display Settings",
+            style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            "Controls menu images, receipt visibility, tax, and variant pricing.",
+            style: TextStyle(color: Colors.grey.shade600, fontSize: 12),
+          ),
+          const SizedBox(height: 10),
+          _settingsSwitch(
+            title: "Show menu item images",
+            value: _showItemImages,
+            onChanged: (value) => setState(() => _showItemImages = value),
+          ),
+          _settingsSwitch(
+            title: "Show category images",
+            value: _showCategoryImages,
+            onChanged: (value) => setState(() => _showCategoryImages = value),
+          ),
+          _settingsSwitch(
+            title: "Print receipt when order completes",
+            value: _printReceiptOnComplete,
+            onChanged: (value) =>
+                setState(() => _printReceiptOnComplete = value),
+          ),
+          const SizedBox(height: 10),
+          _settingsDropdown(
+            label: "Tax breakdown",
+            value: _taxBreakdownDisplay,
+            items: const {
+              "hidden": "Hidden",
+              "total_only": "Tax total only",
+              "always": "Full breakdown",
+              "expandable": "Expandable",
+            },
+            onChanged: (value) => setState(() => _taxBreakdownDisplay = value),
+          ),
+          const SizedBox(height: 10),
+          _settingsDropdown(
+            label: "Variant item price",
+            value: _variantPriceDisplay,
+            items: const {
+              "from_amount": "From lowest price",
+              "on_selection": "Price on selection",
+            },
+            onChanged: (value) => setState(() => _variantPriceDisplay = value),
+          ),
+          const SizedBox(height: 12),
+          SizedBox(
+            height: 44,
+            child: ElevatedButton.icon(
+              onPressed: _savingDisplaySettings ? null : _saveDisplaySettings,
+              icon: _savingDisplaySettings
+                  ? const SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        color: Colors.white,
+                      ),
+                    )
+                  : const Icon(Icons.tune_rounded),
+              label: const Text(
+                "Save Display Settings",
+                style: TextStyle(fontWeight: FontWeight.w800),
+              ),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF9F342C),
+                foregroundColor: Colors.white,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(10),
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _settingsSwitch({
+    required String title,
+    required bool value,
+    required ValueChanged<bool> onChanged,
+  }) {
+    return SwitchListTile.adaptive(
+      contentPadding: EdgeInsets.zero,
+      dense: true,
+      title: Text(
+        title,
+        style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 13),
+      ),
+      activeThumbColor: const Color(0xFF9F342C),
+      value: value,
+      onChanged: onChanged,
+    );
+  }
+
+  Widget _settingsDropdown({
+    required String label,
+    required String value,
+    required Map<String, String> items,
+    required ValueChanged<String> onChanged,
+  }) {
+    final normalizedValue = items.containsKey(value) ? value : items.keys.first;
+    return DropdownButtonFormField<String>(
+      initialValue: normalizedValue,
+      decoration: InputDecoration(
+        labelText: label,
+        border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+        contentPadding:
+            const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      ),
+      items: [
+        for (final entry in items.entries)
+          DropdownMenuItem(value: entry.key, child: Text(entry.value)),
+      ],
+      onChanged: (next) {
+        if (next != null) onChanged(next);
+      },
+    );
+  }
+
   Widget _printerDropdown() {
     return DropdownButtonFormField<PrinterType>(
-      value: selectedPrinterType,
+      initialValue: selectedPrinterType,
       hint: const Text("Select Printer"),
       decoration: InputDecoration(
         filled: true,
@@ -743,6 +1016,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   // ================= HEADER =================
+  // ignore: unused_element
   Widget _header() {
     return Stack(
       children: [
@@ -785,6 +1059,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   // ================= HELPERS =================
+  // ignore: unused_element
   Widget _statusCard() {
     final statusColor = _printerStatusColor();
     final statusText = _printerStatusText();
@@ -835,6 +1110,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
+  // ignore: unused_element
   Widget _kioskNameCard() {
     return Container(
       padding: const EdgeInsets.all(16),
@@ -889,6 +1165,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
+  // ignore: unused_element
   Widget _testPrintCard() {
     return Container(
       padding: const EdgeInsets.all(16),
@@ -933,22 +1210,21 @@ class _SettingsScreenState extends State<SettingsScreen> {
               ),
             ),
           ),
-          Row(
-            children: [],
-          ),
+          const Row(children: []),
         ],
       ),
     );
   }
 
+  // ignore: unused_element
   Widget _pill(String label, String value, {Color? color}) {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
       decoration: BoxDecoration(
-        color: (color ?? const Color(0xFF9F342C)).withOpacity(0.1),
+        color: (color ?? const Color(0xFF9F342C)).withValues(alpha: 0.1),
         borderRadius: BorderRadius.circular(20),
         border: Border.all(
-          color: (color ?? const Color(0xFF9F342C)).withOpacity(0.35),
+          color: (color ?? const Color(0xFF9F342C)).withValues(alpha: 0.35),
         ),
       ),
       child: Text(
@@ -962,6 +1238,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
+  // ignore: unused_element
   Widget _sectionTitle(String title, {String? subtitle}) {
     return Padding(
       padding: const EdgeInsets.only(bottom: 8),
@@ -984,6 +1261,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
+  // ignore: unused_element
   Widget _actionRow() {
     final canTest = selectedPrinterType == PrinterType.internal ||
         selectedPrinterType == PrinterType.usb;
@@ -1053,6 +1331,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     return child;
   }
 
+  // ignore: unused_element
   Widget _card({
     required IconData icon,
     required String title,
@@ -1124,6 +1403,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
+  // ignore: unused_element
   Widget _debugLogPanel() {
     return Container(
       padding: const EdgeInsets.all(12),
@@ -1182,7 +1462,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       border: Border.all(color: borderColor ?? Colors.grey.shade200),
       boxShadow: [
         BoxShadow(
-          color: Colors.black.withOpacity(0.06),
+          color: Colors.black.withValues(alpha: 0.06),
           blurRadius: 12,
           offset: const Offset(0, 6),
         ),
@@ -1195,7 +1475,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       height: 40,
       width: 40,
       decoration: BoxDecoration(
-        color: color.withOpacity(0.12),
+        color: color.withValues(alpha: 0.12),
         shape: BoxShape.circle,
       ),
       child: Icon(icon, color: color),

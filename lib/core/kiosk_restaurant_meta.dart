@@ -4,6 +4,10 @@ class KioskRestaurantMeta {
   static const String kioskDisplayNameKey = "kiosk_display_name";
   static const String restaurantNameKey = "restaurant_name";
   static const String showTaxInReceiptKey = "show_tax_in_receipt";
+  static const String showItemImagesKey = "show_item_images";
+  static const String showCategoryImagesKey = "show_category_images";
+  static const String taxBreakdownDisplayKey = "tax_breakdown_display";
+  static const String variantPriceDisplayKey = "variant_price_display";
   static const String gstNumberKey = "gst_number";
   static const String taxIdKey = "tax_id";
 
@@ -68,6 +72,46 @@ class KioskRestaurantMeta {
     );
     if (showTax != null) {
       await prefs.setBool(showTaxInReceiptKey, showTax);
+    }
+    final showItemImages = resolveBoolSetting(
+      root: root,
+      data: data,
+      restaurant: restaurant,
+      kioskSettings: kioskSettings,
+      keys: const ["show_item_images", "showItemImages"],
+    );
+    if (showItemImages != null) {
+      await prefs.setBool(showItemImagesKey, showItemImages);
+    }
+    final showCategoryImages = resolveBoolSetting(
+      root: root,
+      data: data,
+      restaurant: restaurant,
+      kioskSettings: kioskSettings,
+      keys: const ["show_category_images", "showCategoryImages"],
+    );
+    if (showCategoryImages != null) {
+      await prefs.setBool(showCategoryImagesKey, showCategoryImages);
+    }
+    final taxBreakdown = resolveStringSetting(
+      root: root,
+      data: data,
+      restaurant: restaurant,
+      kioskSettings: kioskSettings,
+      keys: const ["tax_breakdown_display", "taxBreakdownDisplay"],
+    );
+    if (taxBreakdown != null) {
+      await prefs.setString(taxBreakdownDisplayKey, taxBreakdown);
+    }
+    final variantPrice = resolveStringSetting(
+      root: root,
+      data: data,
+      restaurant: restaurant,
+      kioskSettings: kioskSettings,
+      keys: const ["variant_price_display", "variantPriceDisplay"],
+    );
+    if (variantPrice != null) {
+      await prefs.setString(variantPriceDisplayKey, variantPrice);
     }
 
     final taxId = resolveTaxId(
@@ -144,6 +188,36 @@ class KioskRestaurantMeta {
         "show_gst",
         "showGst",
       ]);
+      if (value != null) return value;
+    }
+    return null;
+  }
+
+  static bool? resolveBoolSetting({
+    Map? root,
+    Map? data,
+    Map? restaurant,
+    Map? kioskSettings,
+    required List<String> keys,
+  }) {
+    for (final source in [kioskSettings, restaurant, data, root]) {
+      final value = _readBool(source, keys);
+      if (value != null) return value;
+    }
+    return null;
+  }
+
+  static String? resolveStringSetting({
+    Map? root,
+    Map? data,
+    Map? restaurant,
+    Map? kioskSettings,
+    required List<String> keys,
+  }) {
+    for (final source in [kioskSettings, restaurant, data, root]) {
+      if (source == null) continue;
+      final values = keys.map((key) => source[key]);
+      final value = _firstNonEmpty(values);
       if (value != null) return value;
     }
     return null;
@@ -543,10 +617,14 @@ class KioskRestaurantMeta {
       "paymentAtCounter",
       "show_item_images",
       "showItemImages",
+      "show_category_images",
+      "showCategoryImages",
       "print_receipt_on_complete",
       "printReceiptOnComplete",
       "tax_breakdown_display",
       "taxBreakdownDisplay",
+      "variant_price_display",
+      "variantPriceDisplay",
       "idle_timeout_seconds",
       "idleTimeoutSeconds",
       "payment_qr_timeout_seconds",

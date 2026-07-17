@@ -6,6 +6,7 @@ import 'package:api_selfxo_project/core/connectivity_service.dart';
 import 'package:api_selfxo_project/core/image_url.dart';
 import 'package:api_selfxo_project/core/kiosk_config.dart';
 import 'package:api_selfxo_project/core/kiosk_memory_service.dart';
+import 'package:api_selfxo_project/core/kiosk_restaurant_meta.dart';
 import 'package:api_selfxo_project/core/menu_sync.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
@@ -181,6 +182,8 @@ class _HomePage2State extends State<HomePage2> with TickerProviderStateMixin {
   List<ProductModel> allProducts = [];
   List<String> categories = [];
   Map<String, String> categoryImages = {};
+  bool _showItemImages = true;
+  bool _showCategoryImages = true;
   bool isLoading = true;
   bool hasError = false;
   String errorMessage = "Failed to load products";
@@ -440,6 +443,7 @@ class _HomePage2State extends State<HomePage2> with TickerProviderStateMixin {
       });
     }
     try {
+      await _loadDisplayPreferences();
       await _loadProductOverrides();
       await _loadCategoryOverrides();
 
@@ -493,6 +497,14 @@ class _HomePage2State extends State<HomePage2> with TickerProviderStateMixin {
         Future<void>.microtask(_loadProducts);
       }
     }
+  }
+
+  Future<void> _loadDisplayPreferences() async {
+    final prefs = await SharedPreferences.getInstance();
+    _showItemImages =
+        prefs.getBool(KioskRestaurantMeta.showItemImagesKey) ?? true;
+    _showCategoryImages =
+        prefs.getBool(KioskRestaurantMeta.showCategoryImagesKey) ?? true;
   }
 
   Future<List?> _readCachedMenuProducts() async {
@@ -1364,7 +1376,7 @@ class _HomePage2State extends State<HomePage2> with TickerProviderStateMixin {
                   borderRadius: BorderRadius.circular(20),
                   boxShadow: [
                     BoxShadow(
-                      color: Colors.black.withOpacity(0.08),
+                      color: Colors.black.withValues(alpha: 0.08),
                       blurRadius: 20,
                       offset: const Offset(0, 10),
                     ),
@@ -1551,7 +1563,7 @@ class _HomePage2State extends State<HomePage2> with TickerProviderStateMixin {
                           final int imageSize =
                               (radius * 2 * cacheScale * dpr).round();
                           final String categoryImageUrl = normalizeImageUrl(
-                            categoryImages[catName],
+                            _showCategoryImages ? categoryImages[catName] : "",
                           );
                           return Builder(
                             builder: (ctx) {
@@ -1615,7 +1627,8 @@ class _HomePage2State extends State<HomePage2> with TickerProviderStateMixin {
                                                     ? [
                                                         BoxShadow(
                                                           color: Colors.black
-                                                              .withOpacity(0.2),
+                                                              .withValues(
+                                                                  alpha: 0.2),
                                                           blurRadius: 10,
                                                           offset: const Offset(
                                                             0,
@@ -1630,26 +1643,34 @@ class _HomePage2State extends State<HomePage2> with TickerProviderStateMixin {
                                                   width: radius * 2,
                                                   height: radius * 2,
                                                   child: catName == "All"
-                                                      ? Image.asset(
-                                                          "assets/catall.jpg",
-                                                          fit: BoxFit.cover,
-                                                          filterQuality:
-                                                              FilterQuality
-                                                                  .high,
-                                                          errorBuilder:
-                                                              (_, __, ___) =>
+                                                      ? (_showCategoryImages
+                                                          ? Image.asset(
+                                                              "assets/catall.jpg",
+                                                              fit: BoxFit.cover,
+                                                              filterQuality:
+                                                                  FilterQuality
+                                                                      .high,
+                                                              errorBuilder: (_,
+                                                                      __,
+                                                                      ___) =>
                                                                   Container(
-                                                            color:
-                                                                Colors.white10,
-                                                            child: Icon(
-                                                              Icons.fastfood,
-                                                              color: Colors
-                                                                  .white70,
-                                                              size:
-                                                                  radius * 0.9,
-                                                            ),
-                                                          ),
-                                                        )
+                                                                color: Colors
+                                                                    .white10,
+                                                                child: Icon(
+                                                                  Icons
+                                                                      .fastfood,
+                                                                  color: Colors
+                                                                      .white70,
+                                                                  size: radius *
+                                                                      0.9,
+                                                                ),
+                                                              ),
+                                                            )
+                                                          : _categoryTextAvatar(
+                                                              catName,
+                                                              selected,
+                                                              isTablet,
+                                                            ))
                                                       : categoryImageUrl
                                                               .isNotEmpty
                                                           ? AppNetworkImage(
@@ -1676,16 +1697,28 @@ class _HomePage2State extends State<HomePage2> with TickerProviderStateMixin {
                                                               ),
                                                             )
                                                           : Container(
-                                                              color: Colors
-                                                                  .white10,
-                                                              child: Icon(
-                                                                Icons.fastfood,
-                                                                color: Colors
-                                                                    .white70,
-                                                                size: isTablet
-                                                                    ? 32
-                                                                    : 24,
-                                                              ),
+                                                              color: _showCategoryImages
+                                                                  ? Colors
+                                                                      .white10
+                                                                  : Colors.white
+                                                                      .withValues(
+                                                                          alpha:
+                                                                              0.12),
+                                                              child: _showCategoryImages
+                                                                  ? Icon(
+                                                                      Icons
+                                                                          .fastfood,
+                                                                      color: Colors
+                                                                          .white70,
+                                                                      size: isTablet
+                                                                          ? 32
+                                                                          : 24,
+                                                                    )
+                                                                  : _categoryTextAvatar(
+                                                                      catName,
+                                                                      selected,
+                                                                      isTablet,
+                                                                    ),
                                                             ),
                                                 ),
                                               ),
@@ -1775,6 +1808,40 @@ class _HomePage2State extends State<HomePage2> with TickerProviderStateMixin {
     );
   }
 
+  Widget _categoryTextAvatar(String name, bool selected, bool isTablet) {
+    final label = name.trim().isEmpty
+        ? "?"
+        : name
+            .trim()
+            .split(RegExp(r"\s+"))
+            .where((part) => part.isNotEmpty)
+            .take(2)
+            .map((part) => part[0].toUpperCase())
+            .join();
+    return Container(
+      color: selected
+          ? const Color(0xFFFFE2A7)
+          : Colors.white.withValues(alpha: 0.12),
+      alignment: Alignment.center,
+      child: name == "All"
+          ? Icon(
+              Icons.restaurant_menu_rounded,
+              color: selected ? const Color(0xFF78211B) : Colors.white,
+              size: isTablet ? 32 : 24,
+            )
+          : Text(
+              label,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                color: selected ? const Color(0xFF78211B) : Colors.white,
+                fontSize: isTablet ? 20 : 16,
+                fontWeight: FontWeight.w900,
+              ),
+            ),
+    );
+  }
+
   Widget _buildRightArea(List<ProductModel> filtered, int gridCount) {
     final double width = MediaQuery.of(context).size.width;
     final bool isTablet = width > 600;
@@ -1840,7 +1907,7 @@ class _HomePage2State extends State<HomePage2> with TickerProviderStateMixin {
                                     name: p.name,
                                     category: p.category,
                                     price: p.price,
-                                    imagePath: p.image,
+                                    imagePath: _showItemImages ? p.image : "",
                                     description: p.description,
                                     isVeg: p.isVeg,
                                     qty: widget.getQtyForProduct(p.id),
@@ -1937,7 +2004,7 @@ class _HomePage2State extends State<HomePage2> with TickerProviderStateMixin {
                 name: p.name,
                 category: p.category,
                 price: p.price,
-                imagePath: p.image,
+                imagePath: _showItemImages ? p.image : "",
                 description: p.description,
                 isVeg: p.isVeg,
                 qty: widget.getQtyForProduct(p.id),
@@ -2009,7 +2076,7 @@ class _HomePage2State extends State<HomePage2> with TickerProviderStateMixin {
           ),
           boxShadow: [
             BoxShadow(
-              color: Colors.black.withOpacity(0.89),
+              color: Colors.black.withValues(alpha: 0.89),
               blurRadius: 16,
               offset: const Offset(0, 6),
             ),
@@ -2191,7 +2258,7 @@ class _HomePage2State extends State<HomePage2> with TickerProviderStateMixin {
           backgroundColor: cartGreen,
           foregroundColor: Colors.white,
           elevation: 4,
-          shadowColor: cartGreen.withOpacity(0.4),
+          shadowColor: cartGreen.withValues(alpha: 0.4),
           padding: const EdgeInsets.symmetric(vertical: 0, horizontal: 8),
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(isTablet ? 16 : 12),
@@ -2323,12 +2390,12 @@ class _HomePage2State extends State<HomePage2> with TickerProviderStateMixin {
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
         decoration: BoxDecoration(
-          color: Colors.white.withOpacity(0.92),
+          color: Colors.white.withValues(alpha: 0.92),
           borderRadius: BorderRadius.circular(18),
-          border: Border.all(color: Colors.white.withOpacity(0.6)),
+          border: Border.all(color: Colors.white.withValues(alpha: 0.6)),
           boxShadow: [
             BoxShadow(
-              color: Colors.black.withOpacity(0.2),
+              color: Colors.black.withValues(alpha: 0.2),
               blurRadius: 10,
               offset: const Offset(0, 4),
             ),
@@ -2340,7 +2407,7 @@ class _HomePage2State extends State<HomePage2> with TickerProviderStateMixin {
             Container(
               padding: const EdgeInsets.all(6),
               decoration: BoxDecoration(
-                color: Colors.red.withOpacity(0.12),
+                color: Colors.red.withValues(alpha: 0.12),
                 shape: BoxShape.circle,
               ),
               child: const Icon(
@@ -2468,7 +2535,7 @@ class _HomePage2State extends State<HomePage2> with TickerProviderStateMixin {
             Container(
               padding: EdgeInsets.all(isTablet ? 30 : 20),
               decoration: BoxDecoration(
-                color: const Color(0xFFFBAA30).withOpacity(0.1),
+                color: const Color(0xFFFBAA30).withValues(alpha: 0.1),
                 shape: BoxShape.circle,
               ),
               child: Icon(

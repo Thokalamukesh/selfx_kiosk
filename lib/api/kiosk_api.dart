@@ -718,6 +718,18 @@ class KioskApi {
       kiosk,
       const ["print_receipt_on_complete", "printReceiptOnComplete"],
     );
+    final showItemImages = _readBool(
+      kiosk,
+      const ["show_item_images", "showItemImages"],
+    );
+    final showCategoryImages = _readBool(
+      kiosk,
+      const ["show_category_images", "showCategoryImages"],
+    );
+    final taxBreakdownDisplay = kiosk["tax_breakdown_display"]?.toString() ??
+        kiosk["taxBreakdownDisplay"]?.toString();
+    final variantPriceDisplay = kiosk["variant_price_display"]?.toString() ??
+        kiosk["variantPriceDisplay"]?.toString();
     if (restaurantId != null && restaurantId.isNotEmpty) {
       await prefs.setString("restaurant_id", restaurantId);
     }
@@ -779,6 +791,28 @@ class KioskApi {
       await prefs.setBool(
         "print_receipt_on_complete",
         printReceiptOnComplete,
+      );
+    }
+    if (showItemImages != null) {
+      await prefs.setBool(
+          KioskRestaurantMeta.showItemImagesKey, showItemImages);
+    }
+    if (showCategoryImages != null) {
+      await prefs.setBool(
+        KioskRestaurantMeta.showCategoryImagesKey,
+        showCategoryImages,
+      );
+    }
+    if (taxBreakdownDisplay != null && taxBreakdownDisplay.isNotEmpty) {
+      await prefs.setString(
+        KioskRestaurantMeta.taxBreakdownDisplayKey,
+        taxBreakdownDisplay,
+      );
+    }
+    if (variantPriceDisplay != null && variantPriceDisplay.isNotEmpty) {
+      await prefs.setString(
+        KioskRestaurantMeta.variantPriceDisplayKey,
+        variantPriceDisplay,
       );
     }
     await prefs.remove("payment_at_counter");

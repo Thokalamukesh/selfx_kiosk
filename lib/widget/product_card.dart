@@ -796,17 +796,7 @@ class _CustomizationSheetState extends State<_CustomizationSheet> {
           ),
         );
       },
-      child: SizedBox(
-        height: 92,
-        child: ListView.separated(
-          scrollDirection: Axis.horizontal,
-          physics: const BouncingScrollPhysics(),
-          padding: const EdgeInsets.only(right: 4),
-          itemCount: children.length,
-          separatorBuilder: (_, __) => const SizedBox(width: 10),
-          itemBuilder: (_, itemIndex) => children[itemIndex],
-        ),
-      ),
+      child: _OptionRail(children: children),
     );
   }
 
@@ -1182,6 +1172,148 @@ class _CustomizationSheetState extends State<_CustomizationSheet> {
           color: onTap == null ? Colors.grey : Colors.black,
         ),
       ),
+    );
+  }
+}
+
+class _OptionRail extends StatefulWidget {
+  const _OptionRail({required this.children});
+
+  final List<Widget> children;
+
+  @override
+  State<_OptionRail> createState() => _OptionRailState();
+}
+
+class _OptionRailState extends State<_OptionRail> {
+  final ScrollController _controller = ScrollController();
+  double _progress = 0;
+
+  bool get _showHint => widget.children.length > 2;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller.addListener(_handleScroll);
+  }
+
+  @override
+  void didUpdateWidget(covariant _OptionRail oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.children.length != widget.children.length) {
+      _progress = 0;
+      WidgetsBinding.instance.addPostFrameCallback((_) => _handleScroll());
+    }
+  }
+
+  @override
+  void dispose() {
+    _controller.removeListener(_handleScroll);
+    _controller.dispose();
+    super.dispose();
+  }
+
+  void _handleScroll() {
+    if (!_controller.hasClients) return;
+    final max = _controller.position.maxScrollExtent;
+    final next = max <= 0 ? 0.0 : (_controller.offset / max).clamp(0.0, 1.0);
+    if ((next - _progress).abs() < 0.03) return;
+    setState(() => _progress = next);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final dotCount = widget.children.length.clamp(1, 5);
+    final activeDot = dotCount <= 1 ? 0 : (_progress * (dotCount - 1)).round();
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Stack(
+          children: [
+            SizedBox(
+              height: 92,
+              child: ListView.separated(
+                controller: _controller,
+                scrollDirection: Axis.horizontal,
+                physics: const BouncingScrollPhysics(),
+                padding: const EdgeInsets.only(right: 24),
+                itemCount: widget.children.length,
+                separatorBuilder: (_, __) => const SizedBox(width: 10),
+                itemBuilder: (_, itemIndex) => widget.children[itemIndex],
+              ),
+            ),
+            if (_showHint)
+              Positioned(
+                right: 0,
+                top: 0,
+                bottom: 0,
+                child: IgnorePointer(
+                  child: Container(
+                    width: 36,
+                    decoration: const BoxDecoration(
+                      gradient: LinearGradient(
+                        begin: Alignment.centerLeft,
+                        end: Alignment.centerRight,
+                        colors: [Color(0x00FFFCF7), Color(0xFFFFFCF7)],
+                      ),
+                    ),
+                    alignment: Alignment.centerRight,
+                    child: Container(
+                      width: 26,
+                      height: 26,
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF9F342C),
+                        borderRadius: BorderRadius.circular(999),
+                      ),
+                      child: const Icon(
+                        Icons.chevron_right_rounded,
+                        color: Colors.white,
+                        size: 22,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+          ],
+        ),
+        if (_showHint) ...[
+          const SizedBox(height: 6),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              const Icon(
+                Icons.swipe_rounded,
+                size: 14,
+                color: Color(0xFF9F342C),
+              ),
+              const SizedBox(width: 5),
+              const Text(
+                "Swipe to see all",
+                style: TextStyle(
+                  color: Color(0xFF7A2B22),
+                  fontSize: 11,
+                  fontWeight: FontWeight.w800,
+                ),
+              ),
+              const SizedBox(width: 10),
+              for (var i = 0; i < dotCount; i++)
+                AnimatedContainer(
+                  duration: const Duration(milliseconds: 180),
+                  margin: const EdgeInsets.symmetric(horizontal: 2),
+                  width: i == activeDot ? 13 : 5,
+                  height: 5,
+                  decoration: BoxDecoration(
+                    color: i == activeDot
+                        ? const Color(0xFF9F342C)
+                        : const Color(0xFFE4C99F),
+                    borderRadius: BorderRadius.circular(999),
+                  ),
+                ),
+            ],
+          ),
+        ],
+      ],
     );
   }
 }
