@@ -148,36 +148,48 @@ class PrinterService {
     var duplicateMarkers = 0;
     var printableAfterFirstCut = false;
     var sawCut = false;
+    var sawCounterMarker = false;
+    var printableBeforeCounterMarker = false;
+    var printableAfterCounterMarker = false;
 
     for (final entry in object) {
       if (entry is! Map) continue;
       final type = entry['type']?.toString().trim().toLowerCase() ?? '';
-      if (type == 'cut' ||
-          type == 'fullcutpaper' ||
-          type == 'halfcutpaper' ||
-          type == 'full_cut_paper' ||
-          type == 'half_cut_paper') {
+      if (_isCutEntry(entry)) {
         cutCount++;
         sawCut = true;
         continue;
       }
       if (type == 'text') {
         final text = entry['text']?.toString() ?? '';
-        if (_isDuplicateCopyText(text) ||
-            text.toLowerCase().contains('counter copy')) {
+        final isCounterMarker = _isCounterCopyText(text);
+        if (_isDuplicateCopyText(text) || isCounterMarker) {
           duplicateMarkers++;
+        }
+        if (isCounterMarker) {
+          sawCounterMarker = true;
+          continue;
         }
         if (sawCut && text.trim().isNotEmpty) {
           printableAfterFirstCut = true;
         }
-      } else if (sawCut &&
-          (type == 'image' || type == 'logo' || type == 'qr')) {
+      } else if (sawCut && _isPrintablePrintEntry(entry)) {
         printableAfterFirstCut = true;
+      }
+      if (_isPrintablePrintEntry(entry)) {
+        if (sawCounterMarker) {
+          printableAfterCounterMarker = true;
+        } else {
+          printableBeforeCounterMarker = true;
+        }
       }
     }
 
     return cutCount > 1 ||
         (cutCount >= 1 && printableAfterFirstCut) ||
+        (sawCounterMarker &&
+            printableBeforeCounterMarker &&
+            printableAfterCounterMarker) ||
         duplicateMarkers > 1;
   }
 
@@ -222,11 +234,23 @@ class PrinterService {
   bool _hasCounterLabel(List<dynamic> printObject) {
     for (final entry in printObject) {
       if (entry is Map && entry['type'] == 'text') {
-        final text = entry['text']?.toString().toLowerCase() ?? '';
-        if (text.contains('counter copy')) return true;
+        final text = entry['text']?.toString() ?? '';
+        if (_isCounterCopyText(text)) return true;
       }
     }
     return false;
+  }
+
+  bool _isCutEntry(dynamic entry) {
+    if (entry is! Map) return false;
+    final type = entry['type']?.toString().trim().toLowerCase() ?? '';
+    return type == 'cut' ||
+        type == 'fullcutpaper' ||
+        type == 'halfcutpaper' ||
+        type == 'partialcutpaper' ||
+        type == 'full_cut_paper' ||
+        type == 'half_cut_paper' ||
+        type == 'partial_cut_paper';
   }
 
   Future<List<Map<String, dynamic>>> getUsbPrinters() async {
@@ -567,10 +591,10 @@ class PrinterService {
     rawPrintObjects = _dedupeRawPrintObjects(rawPrintObjects);
     if (rawPrintObjects.isEmpty) return const [];
     final rawCustomerCopies = rawPrintObjects
-        .where((object) => !_isRawDuplicatePrintObject(object))
+        .where((object) => !_isRawCounterPrintObject(object))
         .toList();
     final rawCounterCopies =
-        rawPrintObjects.where(_isRawDuplicatePrintObject).toList();
+        rawPrintObjects.where(_isRawCounterPrintObject).toList();
     final selectedRawPrintObjects = <List<dynamic>>[];
     final generatedCounterCopyIndexes = <int>{};
     final backendAlreadyHasBothCopies = requireBothCopies &&
@@ -626,6 +650,10 @@ class PrinterService {
       }
       printObjects = withImages;
     }
+    if (requireBothCopies &&
+        (backendAlreadyHasBothCopies || backendHasDuplicateCopy)) {
+      printObjects = printObjects.map(_withInterCopyHalfCuts).toList();
+    }
     if (!backendAlreadyHasBothCopies &&
         !backendHasDuplicateCopy &&
         requireBothCopies &&
@@ -639,7 +667,6 @@ class PrinterService {
       }
     }
     if (!backendAlreadyHasBothCopies &&
-        !backendHasDuplicateCopy &&
         requireBothCopies &&
         printObjects.length >= 2) {
       printObjects[0] = _withTrailingCut(printObjects[0], halfCut: true);
@@ -683,6 +710,12 @@ class PrinterService {
     if (parcelTotal > 0) {
       printObjects =
           printObjects.map((p) => _injectParcelLine(p, parcelTotal)).toList();
+    }
+    if (!backendAlreadyHasBothCopies &&
+        requireBothCopies &&
+        printObjects.length >= 2) {
+      printObjects[0] = _withTrailingCut(printObjects[0], halfCut: true);
+      printObjects[1] = _withTrailingCut(printObjects[1], halfCut: false);
     }
     return printObjects;
   }
@@ -2588,6 +2621,9 @@ class PrinterService {
       }
 
       if (type == 'qr' || type == 'qrcode' || type == 'qr_code') {
+        final qrOptions = entry['options'] is Map
+            ? Map<dynamic, dynamic>.from(entry['options'] as Map)
+            : const <dynamic, dynamic>{};
         final data = _cleanBackendQrData(_firstNonEmptyString([
               entry['data'],
               entry['text'],
@@ -2626,9 +2662,13 @@ class PrinterService {
           'paper_width_dots': _paperWidthDotsForBackend(lineWidth),
           'errorLevel': _qrErrorLevel(entry['error_level'] ??
               entry['errorLevel'] ??
+              qrOptions['error_level'] ??
+              qrOptions['errorLevel'] ??
               entry['correction'] ??
               entry['ecc']),
-          'options': {'align': _backendAlign(entry['align'])},
+          'options': {
+            'align': _backendAlign(entry['align'] ?? qrOptions['align'])
+          },
         });
         continue;
       }
@@ -2652,12 +2692,27 @@ class PrinterService {
     return _isDuplicatePrintObject(printObject);
   }
 
+  bool _isRawCounterPrintObject(List<dynamic> printObject) {
+    return _isDuplicatePrintObject(printObject) ||
+        printObject.any((entry) =>
+            entry is Map &&
+            entry['type'] == 'text' &&
+            _isCounterCopyText(entry['text']?.toString() ?? ''));
+  }
+
   bool _isDuplicateCopyText(String text) {
     final value = text.trim().toLowerCase();
     return value == 'duplicate' ||
         value == 'duplicat' ||
         value == 'duplicate copy' ||
         value.contains('duplicate copy');
+  }
+
+  bool _isCounterCopyText(String text) {
+    final value = text.trim().toLowerCase();
+    return value == 'counter' ||
+        value == 'counter copy' ||
+        value.contains('counter copy');
   }
 
   bool _hasPrintableBackendContent(List<dynamic> entries) {
@@ -2688,10 +2743,7 @@ class PrinterService {
     final out = _clonePrintObject(printObject);
     while (out.isNotEmpty) {
       final last = out.last;
-      if (last is Map &&
-          (last['type'] == 'feedLine' ||
-              last['type'] == 'fullCutPaper' ||
-              last['type'] == 'halfCutPaper')) {
+      if (last is Map && (last['type'] == 'feedLine' || _isCutEntry(last))) {
         out.removeLast();
         continue;
       }
@@ -2701,6 +2753,64 @@ class PrinterService {
     out.add({'type': 'feedLine'});
     out.add({'type': halfCut ? 'halfCutPaper' : 'fullCutPaper'});
     return out;
+  }
+
+  List<dynamic> _withInterCopyHalfCuts(List<dynamic> printObject) {
+    final cloned = _clonePrintObject(printObject);
+    if (!cloned.any(_isCutEntry)) {
+      final markerIndex = cloned.indexWhere(_isInterCopyMarker);
+      if (markerIndex <= 0) return cloned;
+      final out = <dynamic>[
+        ...cloned.take(markerIndex),
+        {'type': 'feedLine'},
+        {'type': 'feedLine'},
+        {'type': 'halfCutPaper'},
+        ...cloned.skip(markerIndex),
+      ];
+      return _withTrailingCut(out, halfCut: false);
+    }
+
+    final out = <dynamic>[];
+    var convertedBoundaryCut = false;
+    for (var i = 0; i < cloned.length; i++) {
+      final entry = cloned[i];
+      if (!_isCutEntry(entry)) {
+        out.add(entry);
+        continue;
+      }
+      final hasPrintableAfter = cloned
+          .skip(i + 1)
+          .any((candidate) => _isPrintablePrintEntry(candidate));
+      if (hasPrintableAfter) {
+        convertedBoundaryCut = true;
+        out.add({'type': 'halfCutPaper'});
+      } else {
+        out.add({'type': 'fullCutPaper'});
+      }
+    }
+
+    return convertedBoundaryCut ? _withTrailingCut(out, halfCut: false) : out;
+  }
+
+  bool _isPrintablePrintEntry(dynamic entry) {
+    if (entry is! Map) return false;
+    final type = entry['type']?.toString().trim().toLowerCase() ?? '';
+    if (type == 'text') {
+      return (entry['text']?.toString().trim() ?? '').isNotEmpty;
+    }
+    return type == 'image' ||
+        type == 'logo' ||
+        type == 'qr' ||
+        type == 'qrcode' ||
+        type == 'qr_code' ||
+        type == 'row';
+  }
+
+  bool _isInterCopyMarker(dynamic entry) {
+    if (entry is! Map) return false;
+    final type = entry['type']?.toString().trim().toLowerCase() ?? '';
+    if (type != 'text') return false;
+    return _isCounterCopyText(entry['text']?.toString() ?? '');
   }
 
   bool _isFooterImage(Map entry) {
@@ -2723,6 +2833,9 @@ class PrinterService {
     Map entry, {
     required int lineWidth,
   }) {
+    final options = entry['options'] is Map
+        ? Map<dynamic, dynamic>.from(entry['options'] as Map)
+        : const <dynamic, dynamic>{};
     final url = _firstNonEmptyString([
       entry['url'],
       entry['src'],
@@ -2754,7 +2867,7 @@ class PrinterService {
       if (base64 != null) 'base64': base64,
       'max_width_dots': maxWidth.clamp(96, 384),
       'paper_width_dots': _paperWidthDotsForBackend(lineWidth),
-      'options': {'align': _backendAlign(entry['align'])},
+      'options': {'align': _backendAlign(entry['align'] ?? options['align'])},
     };
   }
 
