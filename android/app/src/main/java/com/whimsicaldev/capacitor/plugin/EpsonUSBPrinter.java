@@ -235,9 +235,10 @@ public class EpsonUSBPrinter {
         this.mPos.POS_TextOut("\r\n", 0, 0, 0, 0, 0, 0);
     }
 
-    private void safeCut(boolean halfCut) throws Exception {
-        feedOneLine();
-        feedOneLine();
+    private void safeCut(boolean halfCut, int feedLines) throws Exception {
+        for (int i = 0; i < feedLines; i++) {
+            feedOneLine();
+        }
         try {
             if (halfCut) {
                 this.mPos.POS_HalfCutPaper();
@@ -381,7 +382,7 @@ public class EpsonUSBPrinter {
     }
 
 
-    public void print(String printObject, int lineFeed, Integer deviceId, Integer vendorId, Integer productId) throws Exception {
+    public void print(String printObject, int lineFeed, int cutFeedLines, Integer deviceId, Integer vendorId, Integer productId) throws Exception {
         ensureConnected(deviceId, vendorId, productId);
 
         this.mPos.POS_Reset();
@@ -480,10 +481,10 @@ public class EpsonUSBPrinter {
                     feedOneLine();
                     break;
                 case "halfCutPaper":
-                    safeCut(true);
+                    safeCut(true, cutFeedLines);
                     break;
                 case "fullCutPaper":
-                    safeCut(false);
+                    safeCut(false, cutFeedLines);
                     break;
                 default:
                     break;

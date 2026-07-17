@@ -149,14 +149,14 @@ class PrinterManager private constructor(context: Context) {
         }
     }
 
-    fun printData(printObject: String, lineFeed: Int, deviceId: Int?, vendorId: Int?, productId: Int?) {
+    fun printData(printObject: String, lineFeed: Int, cutFeedLines: Int, deviceId: Int?, vendorId: Int?, productId: Int?) {
         synchronized(lock) {
             try {
                 log("Print request received (bytes=${printObject.length})")
                 emitPrintStatus("PRINT_STARTED", "Print started")
                 updateState(State.PRINTING, "Printing receipt")
                 emitPrintStatus("PRINTING", "Printing in progress")
-                printer.print(printObject, lineFeed, deviceId, vendorId, productId)
+                printer.print(printObject, lineFeed, cutFeedLines, deviceId, vendorId, productId)
                 updateState(State.CONNECTED, "Print success")
                 emitPrintStatus("PRINT_SUCCESS", "Print completed")
             } catch (e: Exception) {
@@ -222,7 +222,7 @@ class PrinterManager private constructor(context: Context) {
         try {
             updateState(State.PRINTING, "Auto test print started")
             emitPrintStatus("PRINT_STARTED", "Auto test print started")
-            printer.print(buildAutoTestPrint(), 1, deviceId, vendorId, productId)
+            printer.print(buildAutoTestPrint(), 1, 2, deviceId, vendorId, productId)
             lastAutoPrintKey = key
             updateState(State.CONNECTED, "Auto test print completed")
             emitPrintStatus("PRINT_SUCCESS", "Auto test print completed")

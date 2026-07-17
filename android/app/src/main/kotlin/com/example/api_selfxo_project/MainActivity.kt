@@ -114,6 +114,7 @@ class MainActivity : FlutterActivity() {
                     "printData" -> {
                         val printObject = call.argument<String>("printObject")
                         val lineFeed = call.argument<Int>("lineFeed") ?: 0
+                        val cutFeedLines = call.argument<Int>("cutFeedLines") ?: 2
                         val deviceId = call.argument<Int>("deviceId")
                         val vendorId = call.argument<Int>("vendorId")
                         val productId = call.argument<Int>("productId")
@@ -122,7 +123,7 @@ class MainActivity : FlutterActivity() {
                             result.error("INVALID", "printObject missing", null)
                         } else {
                             if (printerManagerReady) {
-                                printerManager.printData(printObject, lineFeed, deviceId, vendorId, productId)
+                                printerManager.printData(printObject, lineFeed, cutFeedLines, deviceId, vendorId, productId)
                             }
                             result.success(true)
                         }

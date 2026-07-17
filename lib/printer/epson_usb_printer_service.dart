@@ -131,6 +131,7 @@ class EpsonUSBPrinterService {
           {
             'printObject': jsonEncode(_printerSafePrintObject(printObject)),
             'lineFeed': 3,
+            'cutFeedLines': 2,
             'deviceId': deviceId,
             'vendorId': vendorId,
             'productId': productId,
@@ -157,6 +158,7 @@ class EpsonUSBPrinterService {
           {
             'printObject': jsonEncode(_printerSafePrintObject(printObject)),
             'lineFeed': 0, // IMPORTANT: backend already includes feedLine/cut
+            'cutFeedLines': 0,
             'deviceId': deviceId,
             'vendorId': vendorId,
             'productId': productId,
