@@ -10,7 +10,13 @@ class KioskApi {
   static final Map<int, String> _orderNumbersById = {};
   static int _syntheticOrderId = -1;
   static const String _fallbackPaymentMethod = "phonepe";
+  static const Duration _bootstrapCacheDuration = Duration(seconds: 30);
   static const Duration _menuCacheDuration = Duration(seconds: 20);
+  static Map<String, dynamic>? _cachedBootstrapData;
+  static DateTime? _cachedBootstrapAt;
+  static String? _cachedBootstrapToken;
+  static Future<Response>? _bootstrapInFlight;
+  static String? _bootstrapInFlightToken;
   static Map<String, dynamic>? _cachedMenuData;
   static DateTime? _cachedMenuAt;
   static const String kioskDisabledMessage =
@@ -108,13 +114,52 @@ class KioskApi {
   // =========================================================
   // RESTAURANT + KIOSK SETTINGS
   // =========================================================
-  Future<Response> getRestaurantData() async {
+  Future<Response> getRestaurantData({bool forceRefresh = false}) async {
+    final prefs = await SharedPreferences.getInstance();
+    final token = prefs.getString("auth_token")?.trim() ?? "";
+
+    if (!forceRefresh) {
+      final cached = _freshCachedBootstrapData(token);
+      if (cached != null) {
+        return Response(
+          requestOptions: RequestOptions(path: "kiosk/bootstrap"),
+          statusCode: 200,
+          data: cached,
+        );
+      }
+
+      final inFlight = _bootstrapInFlight;
+      if (inFlight != null && _bootstrapInFlightToken == token) {
+        return inFlight;
+      }
+    }
+
+    final future = _fetchRestaurantData(token);
+    if (!forceRefresh) {
+      _bootstrapInFlight = future;
+      _bootstrapInFlightToken = token;
+    }
+
+    try {
+      return await future;
+    } finally {
+      if (identical(_bootstrapInFlight, future)) {
+        _bootstrapInFlight = null;
+        _bootstrapInFlightToken = null;
+      }
+    }
+  }
+
+  Future<Response> _fetchRestaurantData(String token) async {
     final dio = await DioClient.getAuthedDio();
     final res = await dio.get("kiosk/bootstrap");
     _throwForBadStatus(res);
     final normalized = _normalizeBootstrap(res.data);
     await KioskRestaurantMeta.storeFromResponse(normalized);
     await _storeBootstrapPrefs(normalized);
+    _cachedBootstrapData = normalized;
+    _cachedBootstrapAt = DateTime.now();
+    _cachedBootstrapToken = token;
     return _copyResponse(res, normalized);
   }
 
@@ -744,6 +789,17 @@ class KioskApi {
     final cachedAt = _cachedMenuAt;
     if (data == null || cachedAt == null) return null;
     if (DateTime.now().difference(cachedAt) > _menuCacheDuration) return null;
+    return data;
+  }
+
+  Map<String, dynamic>? _freshCachedBootstrapData(String token) {
+    final data = _cachedBootstrapData;
+    final cachedAt = _cachedBootstrapAt;
+    if (data == null || cachedAt == null) return null;
+    if (_cachedBootstrapToken != token) return null;
+    if (DateTime.now().difference(cachedAt) > _bootstrapCacheDuration) {
+      return null;
+    }
     return data;
   }
 

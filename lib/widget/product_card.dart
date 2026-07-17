@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart';
-import 'package:flutter/rendering.dart';
 import 'package:api_selfxo_project/core/image_url.dart';
 import 'package:api_selfxo_project/widget/app_network_image.dart';
 import 'package:api_selfxo_project/widget/product_description_dialog.dart';
@@ -54,7 +53,6 @@ class ProductCardRef extends StatefulWidget {
 }
 
 class _ProductCardRefState extends State<ProductCardRef> {
-  static const Color kGreen = Color(0xFF1B8E3E);
   late int qty;
   BuildContext? _imageContext;
   Map<String, dynamic>? _lastVariation;
@@ -148,7 +146,7 @@ class _ProductCardRefState extends State<ProductCardRef> {
         borderRadius: BorderRadius.circular(14),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(0.08),
+            color: Colors.black.withValues(alpha: 0.08),
             blurRadius: 6,
             offset: const Offset(0, 3),
           ),
@@ -243,93 +241,107 @@ class _ProductCardRefState extends State<ProductCardRef> {
   }
 
   Widget _infoSection() {
-    final isTablet = MediaQuery.of(context).size.width > 600;
-    final isCompactWebCard = kIsWeb && !isTablet;
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final isTablet = MediaQuery.of(context).size.width > 600;
+        final isCompactWebCard = kIsWeb && !isTablet;
+        final tightHeight =
+            constraints.hasBoundedHeight && constraints.maxHeight < 70;
+        final compact = isCompactWebCard || tightHeight;
 
-    return Padding(
-      padding: EdgeInsets.symmetric(
-        horizontal: isCompactWebCard ? 8 : 10,
-        vertical: isCompactWebCard ? 1 : 2,
-      ),
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        mainAxisSize: MainAxisSize.max,
-        crossAxisAlignment: CrossAxisAlignment.center,
-        children: [
-          Text(
-            widget.name,
-            textAlign: TextAlign.center,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: TextStyle(
-              fontSize: isTablet ? 16 : (isCompactWebCard ? 12 : 13),
-              fontWeight: FontWeight.w600,
-              height: isCompactWebCard ? 1.1 : null,
-            ),
+        return Padding(
+          padding: EdgeInsets.symmetric(
+            horizontal: compact ? 8 : 10,
+            vertical: tightHeight ? 0 : (isCompactWebCard ? 1 : 2),
           ),
-          Text(
-            "₹${widget.price}",
-            textAlign: TextAlign.center,
-            maxLines: 1,
-            style: TextStyle(
-              fontSize: isTablet ? 16 : (isCompactWebCard ? 13 : 14),
-              fontWeight: FontWeight.bold,
-              color: const Color.fromARGB(255, 0, 0, 0),
-              height: isCompactWebCard ? 1.05 : null,
-            ),
-          ),
-          if (_needsCustomization)
-            Padding(
-              padding: EdgeInsets.only(top: isCompactWebCard ? 2 : 4),
-              child: Container(
-                constraints: const BoxConstraints(maxWidth: 132),
-                padding: EdgeInsets.symmetric(
-                  horizontal: isCompactWebCard ? 6 : 8,
-                  vertical: isCompactWebCard ? 2 : 3,
-                ),
-                decoration: BoxDecoration(
-                  color: const Color(0xFFFFF5E3),
-                  borderRadius: BorderRadius.circular(999),
-                  border: Border.all(color: const Color(0xFFE9BE72)),
-                  boxShadow: [
-                    BoxShadow(
-                      color: const Color(0xFF9F342C).withOpacity(0.08),
-                      blurRadius: 8,
-                      offset: const Offset(0, 3),
-                    ),
-                  ],
-                ),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(
-                      Icons.tune_rounded,
-                      size: isCompactWebCard ? 9 : 11,
-                      color: const Color(0xFF9F342C),
-                    ),
-                    SizedBox(width: isCompactWebCard ? 3 : 4),
-                    Flexible(
-                      child: Text(
-                        "Variants",
-                        textAlign: TextAlign.center,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                          fontSize: isCompactWebCard ? 8.5 : 10,
-                          color: const Color(0xFF7A2B22),
-                          fontWeight: FontWeight.w800,
-                          height: 1.0,
-                        ),
-                      ),
-                    ),
-                  ],
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            mainAxisSize: MainAxisSize.max,
+            crossAxisAlignment: CrossAxisAlignment.center,
+            children: [
+              Text(
+                widget.name,
+                textAlign: TextAlign.center,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  fontSize:
+                      tightHeight ? 13 : (isTablet ? 16 : (compact ? 12 : 13)),
+                  fontWeight: FontWeight.w600,
+                  height: compact ? 1.08 : null,
                 ),
               ),
-            )
-          else
-            SizedBox(height: isTablet ? 12 : (isCompactWebCard ? 0 : 2)),
-        ],
-      ),
+              Text(
+                "₹${widget.price}",
+                textAlign: TextAlign.center,
+                maxLines: 1,
+                style: TextStyle(
+                  fontSize:
+                      tightHeight ? 14 : (isTablet ? 16 : (compact ? 13 : 14)),
+                  fontWeight: FontWeight.bold,
+                  color: const Color.fromARGB(255, 0, 0, 0),
+                  height: compact ? 1.05 : null,
+                ),
+              ),
+              if (_needsCustomization)
+                Padding(
+                  padding: EdgeInsets.only(top: compact ? 2 : 4),
+                  child: Container(
+                    constraints:
+                        BoxConstraints(maxWidth: tightHeight ? 116 : 132),
+                    padding: EdgeInsets.symmetric(
+                      horizontal: compact ? 6 : 8,
+                      vertical: compact ? 2 : 3,
+                    ),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFFFF5E3),
+                      borderRadius: BorderRadius.circular(999),
+                      border: Border.all(color: const Color(0xFFE9BE72)),
+                      boxShadow: tightHeight
+                          ? const []
+                          : [
+                              BoxShadow(
+                                color: const Color(0xFF9F342C)
+                                    .withValues(alpha: 0.08),
+                                blurRadius: 8,
+                                offset: const Offset(0, 3),
+                              ),
+                            ],
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(
+                          Icons.tune_rounded,
+                          size: compact ? 9 : 11,
+                          color: const Color(0xFF9F342C),
+                        ),
+                        SizedBox(width: compact ? 3 : 4),
+                        Flexible(
+                          child: Text(
+                            "Variants",
+                            textAlign: TextAlign.center,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              fontSize: compact ? 8.5 : 10,
+                              color: const Color(0xFF7A2B22),
+                              fontWeight: FontWeight.w800,
+                              height: 1.0,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                )
+              else
+                SizedBox(
+                    height: isTablet && !tightHeight ? 12 : (compact ? 0 : 2)),
+            ],
+          ),
+        );
+      },
     );
   }
 
@@ -570,13 +582,13 @@ class _CustomizationSheetState extends State<_CustomizationSheet> {
             borderRadius: const BorderRadius.vertical(top: Radius.circular(28)),
             border: Border(
               top: BorderSide(
-                color: const Color(0xFFE2B85E).withOpacity(0.65),
+                color: const Color(0xFFE2B85E).withValues(alpha: 0.65),
                 width: 1.2,
               ),
             ),
             boxShadow: [
               BoxShadow(
-                color: Colors.black.withOpacity(0.18),
+                color: Colors.black.withValues(alpha: 0.18),
                 blurRadius: 30,
                 offset: const Offset(0, -10),
               ),
@@ -620,7 +632,7 @@ class _CustomizationSheetState extends State<_CustomizationSheet> {
                             boxShadow: [
                               BoxShadow(
                                 color: const Color(0xFF7A2B22)
-                                    .withOpacity(0.08),
+                                    .withValues(alpha: 0.08),
                                 blurRadius: 18,
                                 offset: const Offset(0, 7),
                               ),
@@ -909,8 +921,8 @@ class _CustomizationSheetState extends State<_CustomizationSheet> {
           boxShadow: [
             BoxShadow(
               color: selected
-                  ? const Color(0xFF9F342C).withOpacity(0.16)
-                  : Colors.black.withOpacity(0.045),
+                  ? const Color(0xFF9F342C).withValues(alpha: 0.16)
+                  : Colors.black.withValues(alpha: 0.045),
               blurRadius: selected ? 14 : 8,
               offset: const Offset(0, 5),
             ),
@@ -925,7 +937,8 @@ class _CustomizationSheetState extends State<_CustomizationSheet> {
                 selected
                     ? Icons.check_circle_rounded
                     : Icons.radio_button_unchecked_rounded,
-                color: selected ? const Color(0xFF9F342C) : Colors.grey.shade400,
+                color:
+                    selected ? const Color(0xFF9F342C) : Colors.grey.shade400,
                 size: 19,
               ),
             ),
@@ -998,8 +1011,8 @@ class _CustomizationSheetState extends State<_CustomizationSheet> {
           boxShadow: [
             BoxShadow(
               color: selected
-                  ? const Color(0xFFD78A19).withOpacity(0.15)
-                  : Colors.black.withOpacity(0.045),
+                  ? const Color(0xFFD78A19).withValues(alpha: 0.15)
+                  : Colors.black.withValues(alpha: 0.045),
               blurRadius: selected ? 14 : 8,
               offset: const Offset(0, 5),
             ),
@@ -1014,7 +1027,8 @@ class _CustomizationSheetState extends State<_CustomizationSheet> {
                 selected
                     ? Icons.check_circle_rounded
                     : Icons.add_circle_outline_rounded,
-                color: selected ? const Color(0xFFD78A19) : Colors.grey.shade400,
+                color:
+                    selected ? const Color(0xFFD78A19) : Colors.grey.shade400,
                 size: 19,
               ),
             ),
@@ -1066,7 +1080,7 @@ class _CustomizationSheetState extends State<_CustomizationSheet> {
         border: Border.all(color: const Color(0xFFF0E2CA)),
         boxShadow: [
           BoxShadow(
-            color: const Color(0xFF7A2B22).withOpacity(0.09),
+            color: const Color(0xFF7A2B22).withValues(alpha: 0.09),
             blurRadius: 18,
             offset: const Offset(0, 7),
           ),
@@ -1100,7 +1114,7 @@ class _CustomizationSheetState extends State<_CustomizationSheet> {
               style: ElevatedButton.styleFrom(
                 backgroundColor: Colors.green.shade700,
                 foregroundColor: Colors.white,
-                shadowColor: Colors.green.withOpacity(0.3),
+                shadowColor: Colors.green.withValues(alpha: 0.3),
                 padding: const EdgeInsets.symmetric(vertical: 13),
                 shape: RoundedRectangleBorder(
                   borderRadius: BorderRadius.circular(14),
@@ -1171,6 +1185,7 @@ class _CustomizationSheetState extends State<_CustomizationSheet> {
     );
   }
 }
+
 ///
 ///
 ///
