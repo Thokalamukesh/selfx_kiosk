@@ -566,7 +566,7 @@ class _CustomizationSheetState extends State<_CustomizationSheet> {
     final hasVariants = widget.variations.isNotEmpty;
     final hasModifiers = widget.modifiers.isNotEmpty;
     final hasBoth = hasVariants && hasModifiers;
-    final sheetHeightFactor = hasBoth ? (isTablet ? 0.68 : 0.74) : 0.52;
+    final sheetHeightFactor = hasBoth ? (isTablet ? 0.78 : 0.84) : 0.58;
 
     return Align(
       alignment: Alignment.bottomCenter,
@@ -656,12 +656,15 @@ class _CustomizationSheetState extends State<_CustomizationSheet> {
                                     Icons.straighten_rounded,
                                   ),
                                   const SizedBox(height: 8),
-                                  _animatedOptionRow(
+                                  _animatedOptionGrid(
                                     index: 0,
-                                    children: widget.variations
-                                        .map((v) =>
-                                            _buildVariationTile(v, isTablet))
-                                        .toList(),
+                                    itemCount: widget.variations.length,
+                                    itemBuilder: (itemIndex, width) =>
+                                        _buildVariationTile(
+                                      widget.variations[itemIndex],
+                                      isTablet,
+                                      width,
+                                    ),
                                   ),
                                   const SizedBox(height: 14),
                                 ],
@@ -671,12 +674,15 @@ class _CustomizationSheetState extends State<_CustomizationSheet> {
                                     Icons.tune_rounded,
                                   ),
                                   const SizedBox(height: 8),
-                                  _animatedOptionRow(
+                                  _animatedOptionGrid(
                                     index: hasVariants ? 1 : 0,
-                                    children: widget.modifiers
-                                        .map((m) =>
-                                            _buildModifierTile(m, isTablet))
-                                        .toList(),
+                                    itemCount: widget.modifiers.length,
+                                    itemBuilder: (itemIndex, width) =>
+                                        _buildModifierTile(
+                                      widget.modifiers[itemIndex],
+                                      isTablet,
+                                      width,
+                                    ),
                                   ),
                                   const SizedBox(height: 14),
                                 ],
@@ -779,9 +785,10 @@ class _CustomizationSheetState extends State<_CustomizationSheet> {
     );
   }
 
-  Widget _animatedOptionRow({
+  Widget _animatedOptionGrid({
     required int index,
-    required List<Widget> children,
+    required int itemCount,
+    required Widget Function(int itemIndex, double width) itemBuilder,
   }) {
     return TweenAnimationBuilder<double>(
       duration: Duration(milliseconds: 260 + (index * 80)),
@@ -796,7 +803,10 @@ class _CustomizationSheetState extends State<_CustomizationSheet> {
           ),
         );
       },
-      child: _OptionRail(children: children),
+      child: _OptionGrid(
+        itemCount: itemCount,
+        itemBuilder: itemBuilder,
+      ),
     );
   }
 
@@ -884,7 +894,11 @@ class _CustomizationSheetState extends State<_CustomizationSheet> {
     );
   }
 
-  Widget _buildVariationTile(Map<String, dynamic> v, bool isTablet) {
+  Widget _buildVariationTile(
+    Map<String, dynamic> v,
+    bool isTablet,
+    double width,
+  ) {
     final optionId = _optionId(v);
     final bool selected = selectedVariation == optionId;
     final String label = _safeText(v["variation"] ?? v["name"]);
@@ -898,8 +912,8 @@ class _CustomizationSheetState extends State<_CustomizationSheet> {
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 180),
         curve: Curves.easeOut,
-        width: isTablet ? 192 : 158,
-        constraints: const BoxConstraints(minHeight: 82),
+        width: width,
+        constraints: const BoxConstraints(minHeight: 88),
         padding: const EdgeInsets.all(12),
         decoration: BoxDecoration(
           color: selected ? const Color(0xFFFFF4EA) : Colors.white,
@@ -971,7 +985,11 @@ class _CustomizationSheetState extends State<_CustomizationSheet> {
     );
   }
 
-  Widget _buildModifierTile(Map<String, dynamic> m, bool isTablet) {
+  Widget _buildModifierTile(
+    Map<String, dynamic> m,
+    bool isTablet,
+    double width,
+  ) {
     final id = _optionId(m);
     final selected = selectedModifiers.contains(id);
     final String label = _safeText(m["name"]);
@@ -988,8 +1006,8 @@ class _CustomizationSheetState extends State<_CustomizationSheet> {
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 180),
         curve: Curves.easeOut,
-        width: isTablet ? 192 : 158,
-        constraints: const BoxConstraints(minHeight: 82),
+        width: width,
+        constraints: const BoxConstraints(minHeight: 88),
         padding: const EdgeInsets.all(12),
         decoration: BoxDecoration(
           color: selected ? const Color(0xFFFFF7E8) : Colors.white,
@@ -1176,144 +1194,78 @@ class _CustomizationSheetState extends State<_CustomizationSheet> {
   }
 }
 
-class _OptionRail extends StatefulWidget {
-  const _OptionRail({required this.children});
+class _OptionGrid extends StatelessWidget {
+  const _OptionGrid({
+    required this.itemCount,
+    required this.itemBuilder,
+  });
 
-  final List<Widget> children;
-
-  @override
-  State<_OptionRail> createState() => _OptionRailState();
-}
-
-class _OptionRailState extends State<_OptionRail> {
-  final ScrollController _controller = ScrollController();
-  double _progress = 0;
-
-  bool get _showHint => widget.children.length > 2;
-
-  @override
-  void initState() {
-    super.initState();
-    _controller.addListener(_handleScroll);
-  }
-
-  @override
-  void didUpdateWidget(covariant _OptionRail oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (oldWidget.children.length != widget.children.length) {
-      _progress = 0;
-      WidgetsBinding.instance.addPostFrameCallback((_) => _handleScroll());
-    }
-  }
-
-  @override
-  void dispose() {
-    _controller.removeListener(_handleScroll);
-    _controller.dispose();
-    super.dispose();
-  }
-
-  void _handleScroll() {
-    if (!_controller.hasClients) return;
-    final max = _controller.position.maxScrollExtent;
-    final next = max <= 0 ? 0.0 : (_controller.offset / max).clamp(0.0, 1.0);
-    if ((next - _progress).abs() < 0.03) return;
-    setState(() => _progress = next);
-  }
+  final int itemCount;
+  final Widget Function(int itemIndex, double width) itemBuilder;
 
   @override
   Widget build(BuildContext context) {
-    final dotCount = widget.children.length.clamp(1, 5);
-    final activeDot = dotCount <= 1 ? 0 : (_progress * (dotCount - 1)).round();
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        const spacing = 10.0;
+        final availableWidth = constraints.maxWidth.isFinite
+            ? constraints.maxWidth
+            : MediaQuery.of(context).size.width - 32;
+        final columns = availableWidth >= 720
+            ? 4
+            : availableWidth >= 520
+                ? 3
+                : 2;
+        final tileWidth =
+            (availableWidth - (spacing * (columns - 1))) / columns;
 
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        Stack(
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            SizedBox(
-              height: 92,
-              child: ListView.separated(
-                controller: _controller,
-                scrollDirection: Axis.horizontal,
-                physics: const BouncingScrollPhysics(),
-                padding: const EdgeInsets.only(right: 24),
-                itemCount: widget.children.length,
-                separatorBuilder: (_, __) => const SizedBox(width: 10),
-                itemBuilder: (_, itemIndex) => widget.children[itemIndex],
-              ),
+            Wrap(
+              spacing: spacing,
+              runSpacing: spacing,
+              children: [
+                for (var i = 0; i < itemCount; i++) itemBuilder(i, tileWidth),
+              ],
             ),
-            if (_showHint)
-              Positioned(
-                right: 0,
-                top: 0,
-                bottom: 0,
-                child: IgnorePointer(
-                  child: Container(
-                    width: 36,
-                    decoration: const BoxDecoration(
-                      gradient: LinearGradient(
-                        begin: Alignment.centerLeft,
-                        end: Alignment.centerRight,
-                        colors: [Color(0x00FFFCF7), Color(0xFFFFFCF7)],
-                      ),
-                    ),
-                    alignment: Alignment.centerRight,
-                    child: Container(
-                      width: 26,
-                      height: 26,
-                      decoration: BoxDecoration(
-                        color: const Color(0xFF9F342C),
-                        borderRadius: BorderRadius.circular(999),
-                      ),
-                      child: const Icon(
-                        Icons.chevron_right_rounded,
-                        color: Colors.white,
-                        size: 22,
-                      ),
+            if (itemCount > columns) ...[
+              const SizedBox(height: 8),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Container(
+                    width: 22,
+                    height: 3,
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF9F342C),
+                      borderRadius: BorderRadius.circular(99),
                     ),
                   ),
-                ),
-              ),
-          ],
-        ),
-        if (_showHint) ...[
-          const SizedBox(height: 6),
-          Row(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              const Icon(
-                Icons.swipe_rounded,
-                size: 14,
-                color: Color(0xFF9F342C),
-              ),
-              const SizedBox(width: 5),
-              const Text(
-                "Swipe to see all",
-                style: TextStyle(
-                  color: Color(0xFF7A2B22),
-                  fontSize: 11,
-                  fontWeight: FontWeight.w800,
-                ),
-              ),
-              const SizedBox(width: 10),
-              for (var i = 0; i < dotCount; i++)
-                AnimatedContainer(
-                  duration: const Duration(milliseconds: 180),
-                  margin: const EdgeInsets.symmetric(horizontal: 2),
-                  width: i == activeDot ? 13 : 5,
-                  height: 5,
-                  decoration: BoxDecoration(
-                    color: i == activeDot
-                        ? const Color(0xFF9F342C)
-                        : const Color(0xFFE4C99F),
-                    borderRadius: BorderRadius.circular(999),
+                  const SizedBox(width: 5),
+                  Container(
+                    width: 8,
+                    height: 3,
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFE4C99F),
+                      borderRadius: BorderRadius.circular(99),
+                    ),
                   ),
-                ),
+                  const SizedBox(width: 5),
+                  Container(
+                    width: 8,
+                    height: 3,
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFE4C99F),
+                      borderRadius: BorderRadius.circular(99),
+                    ),
+                  ),
+                ],
+              ),
             ],
-          ),
-        ],
-      ],
+          ],
+        );
+      },
     );
   }
 }
