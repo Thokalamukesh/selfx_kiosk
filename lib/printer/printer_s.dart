@@ -2496,6 +2496,7 @@ class PrinterService {
         'align': _backendAlign(options['align']),
         'nLan': _toInt(options['nLan']) ?? 0,
         'nOrgx': _toInt(options['nOrgx']) ?? 0,
+        'paperWidthChars': lineWidth,
       };
       normalized.add({
         'type': 'text',

@@ -1,8 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
-import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
-import 'package:api_selfxo_project/core/kiosk_log.dart';
 
 class EpsonUSBPrinterService {
   // MUST match PRINTER_CHANNEL in MainActivity.kt
@@ -49,7 +47,7 @@ class EpsonUSBPrinterService {
           .map((e) => Map<String, dynamic>.from(e))
           .map(_normalizePrinter)
           .toList();
-    } catch (e, st) {
+    } catch (_) {
       return [];
     }
   }
@@ -138,7 +136,7 @@ class EpsonUSBPrinterService {
             'productId': productId,
           },
           _printTimeout);
-    } catch (e, st) {
+    } catch (_) {
       rethrow;
     }
   }
@@ -164,13 +162,42 @@ class EpsonUSBPrinterService {
             'productId': productId,
           },
           _printTimeout);
-    } catch (e, st) {
+    } catch (_) {
       rethrow;
     }
   }
 
   List<dynamic> _printerSafePrintObject(List<dynamic> printObject) {
-    return printObject.map(_printerSafeValue).toList();
+    return printObject.map(_printerSafePrintEntry).toList();
+  }
+
+  dynamic _printerSafePrintEntry(dynamic value) {
+    final safe = _printerSafeValue(value);
+    if (safe is! Map || safe['type'] != 'text') return safe;
+
+    final options = safe['options'] is Map
+        ? Map<dynamic, dynamic>.from(safe['options'] as Map)
+        : <dynamic, dynamic>{};
+    final align = _toInt(options['align']) ?? 0;
+    if (align == 0) {
+      safe['options'] = options;
+      return safe;
+    }
+
+    final width = (_toInt(options['paperWidthChars'] ??
+                options['paper_width_chars'] ??
+                safe['paperWidthChars'] ??
+                safe['paper_width_chars']) ??
+            32)
+        .clamp(24, 48);
+    final widthTimes = (_toInt(options['widthTimes']) ?? 0).clamp(0, 3);
+    final effectiveWidth = (width / (widthTimes + 1)).floor().clamp(8, width);
+    final text = (safe['text'] ?? '').toString().trim();
+    safe['text'] = _alignTextForPaper(text, align, effectiveWidth);
+    options['align'] = 0;
+    options['nOrgx'] = 0;
+    safe['options'] = options;
+    return safe;
   }
 
   dynamic _printerSafeValue(dynamic value) {
@@ -182,6 +209,13 @@ class EpsonUSBPrinterService {
       );
     }
     return value;
+  }
+
+  String _alignTextForPaper(String text, int align, int width) {
+    if (text.isEmpty || text.length >= width) return text;
+    if (align == 2) return text.padLeft(width);
+    final left = ((width - text.length) / 2).floor();
+    return ' ' * left + text;
   }
 
   String _printerSafeText(String value) {
@@ -206,7 +240,7 @@ class EpsonUSBPrinterService {
           },
           _defaultTimeout);
       return res?['status'] ?? 'UNKNOWN_STATUS';
-    } catch (e, st) {
+    } catch (_) {
       return 'ERROR';
     }
   }
@@ -230,7 +264,7 @@ class EpsonUSBPrinterService {
             'productId': productId,
           },
           _connectTimeout);
-    } catch (e, st) {
+    } catch (_) {
       rethrow;
     }
   }
