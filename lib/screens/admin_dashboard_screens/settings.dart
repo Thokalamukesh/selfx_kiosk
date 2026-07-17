@@ -842,43 +842,73 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   Widget _displaySettingsSection() {
     return Container(
-      padding: const EdgeInsets.all(14),
+      padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
-        color: const Color(0xFFFFFBF7),
-        borderRadius: BorderRadius.circular(14),
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(18),
         border: Border.all(color: const Color(0xFFEED9BC)),
+        boxShadow: [
+          BoxShadow(
+            color: const Color(0xFF5F1711).withValues(alpha: 0.06),
+            blurRadius: 18,
+            offset: const Offset(0, 10),
+          ),
+        ],
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          const Text(
-            "Display Settings",
-            style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800),
+          Row(
+            children: [
+              Container(
+                height: 42,
+                width: 42,
+                decoration: BoxDecoration(
+                  color: const Color(0xFF9F342C).withValues(alpha: 0.1),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: const Icon(
+                  Icons.dashboard_customize_rounded,
+                  color: Color(0xFF9F342C),
+                ),
+              ),
+              const SizedBox(width: 12),
+              const Expanded(
+                child: Text(
+                  "Display Settings",
+                  style: TextStyle(fontSize: 17, fontWeight: FontWeight.w900),
+                ),
+              ),
+            ],
           ),
-          const SizedBox(height: 4),
-          Text(
-            "Controls menu images, receipt visibility, tax, and variant pricing.",
-            style: TextStyle(color: Colors.grey.shade600, fontSize: 12),
-          ),
-          const SizedBox(height: 10),
+          const SizedBox(height: 14),
           _settingsSwitch(
+            icon: Icons.image_rounded,
             title: "Show menu item images",
+            subtitle: "Product cards use item photos when enabled.",
             value: _showItemImages,
             onChanged: (value) => setState(() => _showItemImages = value),
           ),
+          const SizedBox(height: 10),
           _settingsSwitch(
+            icon: Icons.category_rounded,
             title: "Show category images",
+            subtitle: "Turn off for a clean text-only category menu.",
             value: _showCategoryImages,
             onChanged: (value) => setState(() => _showCategoryImages = value),
           ),
+          const SizedBox(height: 10),
           _settingsSwitch(
+            icon: Icons.receipt_long_rounded,
             title: "Print receipt when order completes",
+            subtitle: "Follows the admin receipt setting.",
             value: _printReceiptOnComplete,
             onChanged: (value) =>
                 setState(() => _printReceiptOnComplete = value),
           ),
-          const SizedBox(height: 10),
+          const SizedBox(height: 14),
           _settingsDropdown(
+            icon: Icons.percent_rounded,
             label: "Tax breakdown",
             value: _taxBreakdownDisplay,
             items: const {
@@ -891,6 +921,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ),
           const SizedBox(height: 10),
           _settingsDropdown(
+            icon: Icons.sell_rounded,
             label: "Variant item price",
             value: _variantPriceDisplay,
             items: const {
@@ -933,45 +964,132 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   Widget _settingsSwitch({
+    required IconData icon,
     required String title,
+    required String subtitle,
     required bool value,
     required ValueChanged<bool> onChanged,
   }) {
-    return SwitchListTile.adaptive(
-      contentPadding: EdgeInsets.zero,
-      dense: true,
-      title: Text(
-        title,
-        style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 13),
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 180),
+      padding: const EdgeInsets.fromLTRB(12, 10, 8, 10),
+      decoration: BoxDecoration(
+        color: value ? const Color(0xFFFFF7EC) : const Color(0xFFF8F6F3),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(
+          color: value
+              ? const Color(0xFFEBC991)
+              : Colors.black.withValues(alpha: 0.06),
+        ),
       ),
-      activeThumbColor: const Color(0xFF9F342C),
-      value: value,
-      onChanged: onChanged,
+      child: Row(
+        children: [
+          Container(
+            height: 36,
+            width: 36,
+            decoration: BoxDecoration(
+              color: value
+                  ? const Color(0xFF9F342C).withValues(alpha: 0.12)
+                  : Colors.white,
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: Icon(
+              icon,
+              color: value ? const Color(0xFF9F342C) : Colors.grey.shade600,
+              size: 20,
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  title,
+                  style: const TextStyle(
+                    fontWeight: FontWeight.w800,
+                    fontSize: 13,
+                  ),
+                ),
+                const SizedBox(height: 3),
+                Text(
+                  subtitle,
+                  style: TextStyle(color: Colors.grey.shade600, fontSize: 11),
+                ),
+              ],
+            ),
+          ),
+          Switch.adaptive(
+            activeThumbColor: const Color(0xFF9F342C),
+            value: value,
+            onChanged: onChanged,
+          ),
+        ],
+      ),
     );
   }
 
   Widget _settingsDropdown({
+    required IconData icon,
     required String label,
     required String value,
     required Map<String, String> items,
     required ValueChanged<String> onChanged,
   }) {
     final normalizedValue = items.containsKey(value) ? value : items.keys.first;
-    return DropdownButtonFormField<String>(
-      initialValue: normalizedValue,
-      decoration: InputDecoration(
-        labelText: label,
-        border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
-        contentPadding:
-            const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+    return Container(
+      padding: const EdgeInsets.fromLTRB(12, 10, 12, 12),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF8F6F3),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: Colors.black.withValues(alpha: 0.06)),
       ),
-      items: [
-        for (final entry in items.entries)
-          DropdownMenuItem(value: entry.key, child: Text(entry.value)),
-      ],
-      onChanged: (next) {
-        if (next != null) onChanged(next);
-      },
+      child: Row(
+        children: [
+          Container(
+            height: 36,
+            width: 36,
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: Icon(icon, color: const Color(0xFF9F342C), size: 20),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: DropdownButtonFormField<String>(
+              initialValue: normalizedValue,
+              decoration: InputDecoration(
+                labelText: label,
+                isDense: true,
+                filled: true,
+                fillColor: Colors.white,
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(10),
+                  borderSide: BorderSide(color: Colors.grey.shade300),
+                ),
+                enabledBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(10),
+                  borderSide: BorderSide(color: Colors.grey.shade300),
+                ),
+                focusedBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(10),
+                  borderSide: const BorderSide(color: Color(0xFF9F342C)),
+                ),
+                contentPadding:
+                    const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+              ),
+              items: [
+                for (final entry in items.entries)
+                  DropdownMenuItem(value: entry.key, child: Text(entry.value)),
+              ],
+              onChanged: (next) {
+                if (next != null) onChanged(next);
+              },
+            ),
+          ),
+        ],
+      ),
     );
   }
 

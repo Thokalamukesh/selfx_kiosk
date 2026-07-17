@@ -1565,25 +1565,42 @@ class _HomePage2State extends State<HomePage2> with TickerProviderStateMixin {
                           final String categoryImageUrl = normalizeImageUrl(
                             _showCategoryImages ? categoryImages[catName] : "",
                           );
+                          void selectCategory() {
+                            setState(() {
+                              selectedIndex = i;
+                              _activeCategoryIndex = i;
+                              searchQuery = "";
+                              searchCtrl.clear();
+                            });
+                            WidgetsBinding.instance.addPostFrameCallback((_) {
+                              if (!scrollCtrl.hasClients) return;
+                              scrollCtrl.jumpTo(0);
+                            });
+                          }
+
+                          if (!_showCategoryImages) {
+                            return Builder(
+                              builder: (ctx) {
+                                _leftCategoryContexts[catName] = ctx;
+                                return GestureDetector(
+                                  key: ValueKey("left-cat-$catName"),
+                                  onTap: selectCategory,
+                                  child: _textOnlyCategoryTile(
+                                    catName,
+                                    selected: selected,
+                                    isTablet: isTablet,
+                                  ),
+                                );
+                              },
+                            );
+                          }
+
                           return Builder(
                             builder: (ctx) {
                               _leftCategoryContexts[catName] = ctx;
                               return GestureDetector(
                                 key: ValueKey("left-cat-$catName"),
-                                onTap: () {
-                                  setState(() {
-                                    selectedIndex = i;
-                                    _activeCategoryIndex = i;
-                                    searchQuery = "";
-                                    searchCtrl.clear();
-                                  });
-                                  WidgetsBinding.instance.addPostFrameCallback((
-                                    _,
-                                  ) {
-                                    if (!scrollCtrl.hasClients) return;
-                                    scrollCtrl.jumpTo(0);
-                                  });
-                                },
+                                onTap: selectCategory,
                                 child: Stack(
                                   clipBehavior: Clip.none,
                                   alignment: Alignment.center,
@@ -1643,34 +1660,26 @@ class _HomePage2State extends State<HomePage2> with TickerProviderStateMixin {
                                                   width: radius * 2,
                                                   height: radius * 2,
                                                   child: catName == "All"
-                                                      ? (_showCategoryImages
-                                                          ? Image.asset(
-                                                              "assets/catall.jpg",
-                                                              fit: BoxFit.cover,
-                                                              filterQuality:
-                                                                  FilterQuality
-                                                                      .high,
-                                                              errorBuilder: (_,
-                                                                      __,
-                                                                      ___) =>
+                                                      ? Image.asset(
+                                                          "assets/catall.jpg",
+                                                          fit: BoxFit.cover,
+                                                          filterQuality:
+                                                              FilterQuality
+                                                                  .high,
+                                                          errorBuilder:
+                                                              (_, __, ___) =>
                                                                   Container(
-                                                                color: Colors
-                                                                    .white10,
-                                                                child: Icon(
-                                                                  Icons
-                                                                      .fastfood,
-                                                                  color: Colors
-                                                                      .white70,
-                                                                  size: radius *
-                                                                      0.9,
-                                                                ),
-                                                              ),
-                                                            )
-                                                          : _categoryTextAvatar(
-                                                              catName,
-                                                              selected,
-                                                              isTablet,
-                                                            ))
+                                                            color:
+                                                                Colors.white10,
+                                                            child: Icon(
+                                                              Icons.fastfood,
+                                                              color: Colors
+                                                                  .white70,
+                                                              size:
+                                                                  radius * 0.9,
+                                                            ),
+                                                          ),
+                                                        )
                                                       : categoryImageUrl
                                                               .isNotEmpty
                                                           ? AppNetworkImage(
@@ -1697,28 +1706,16 @@ class _HomePage2State extends State<HomePage2> with TickerProviderStateMixin {
                                                               ),
                                                             )
                                                           : Container(
-                                                              color: _showCategoryImages
-                                                                  ? Colors
-                                                                      .white10
-                                                                  : Colors.white
-                                                                      .withValues(
-                                                                          alpha:
-                                                                              0.12),
-                                                              child: _showCategoryImages
-                                                                  ? Icon(
-                                                                      Icons
-                                                                          .fastfood,
-                                                                      color: Colors
-                                                                          .white70,
-                                                                      size: isTablet
-                                                                          ? 32
-                                                                          : 24,
-                                                                    )
-                                                                  : _categoryTextAvatar(
-                                                                      catName,
-                                                                      selected,
-                                                                      isTablet,
-                                                                    ),
+                                                              color: Colors
+                                                                  .white10,
+                                                              child: Icon(
+                                                                Icons.fastfood,
+                                                                color: Colors
+                                                                    .white70,
+                                                                size: isTablet
+                                                                    ? 32
+                                                                    : 24,
+                                                              ),
                                                             ),
                                                 ),
                                               ),
@@ -1808,37 +1805,61 @@ class _HomePage2State extends State<HomePage2> with TickerProviderStateMixin {
     );
   }
 
-  Widget _categoryTextAvatar(String name, bool selected, bool isTablet) {
-    final label = name.trim().isEmpty
-        ? "?"
-        : name
-            .trim()
-            .split(RegExp(r"\s+"))
-            .where((part) => part.isNotEmpty)
-            .take(2)
-            .map((part) => part[0].toUpperCase())
-            .join();
-    return Container(
-      color: selected
-          ? const Color(0xFFFFE2A7)
-          : Colors.white.withValues(alpha: 0.12),
+  Widget _textOnlyCategoryTile(
+    String name, {
+    required bool selected,
+    required bool isTablet,
+  }) {
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 220),
+      curve: Curves.easeOutCubic,
+      margin: EdgeInsets.fromLTRB(
+        isTablet ? 14 : 8,
+        isTablet ? 8 : 6,
+        selected ? 0 : (isTablet ? 12 : 8),
+        isTablet ? 8 : 6,
+      ),
+      padding: EdgeInsets.symmetric(
+        horizontal: isTablet ? 16 : 10,
+        vertical: isTablet ? 18 : 14,
+      ),
+      constraints: BoxConstraints(minHeight: isTablet ? 72 : 56),
+      decoration: BoxDecoration(
+        color: selected
+            ? const Color(0xFFFFF6E8)
+            : Colors.white.withValues(alpha: 0.08),
+        borderRadius: BorderRadius.horizontal(
+          left: Radius.circular(isTablet ? 22 : 16),
+          right: Radius.circular(selected ? 0 : (isTablet ? 22 : 16)),
+        ),
+        border: Border.all(
+          color: selected
+              ? const Color(0xFFFFD89C)
+              : Colors.white.withValues(alpha: 0.14),
+        ),
+        boxShadow: selected
+            ? [
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: 0.16),
+                  blurRadius: 14,
+                  offset: const Offset(0, 6),
+                ),
+              ]
+            : const [],
+      ),
       alignment: Alignment.center,
-      child: name == "All"
-          ? Icon(
-              Icons.restaurant_menu_rounded,
-              color: selected ? const Color(0xFF78211B) : Colors.white,
-              size: isTablet ? 32 : 24,
-            )
-          : Text(
-              label,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: TextStyle(
-                color: selected ? const Color(0xFF78211B) : Colors.white,
-                fontSize: isTablet ? 20 : 16,
-                fontWeight: FontWeight.w900,
-              ),
-            ),
+      child: Text(
+        name,
+        textAlign: TextAlign.center,
+        maxLines: isTablet ? 3 : 2,
+        overflow: TextOverflow.ellipsis,
+        style: TextStyle(
+          color: selected ? const Color(0xFF5F1711) : const Color(0xFFFFE7C8),
+          fontSize: isTablet ? 17 : 14,
+          height: 1.1,
+          fontWeight: selected ? FontWeight.w900 : FontWeight.w800,
+        ),
+      ),
     );
   }
 
