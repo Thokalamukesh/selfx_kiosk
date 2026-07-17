@@ -13,7 +13,6 @@ import 'package:sunmi_printer_plus/sunmi_style.dart';
 import '../api/kiosk_api.dart';
 import '../core/india_time.dart';
 import '../core/kiosk_log.dart';
-import '../core/receipt_print_mode.dart';
 import 'epson_usb_printer_service.dart';
 
 enum PrinterType { internal, usb, lan }
@@ -370,77 +369,50 @@ class PrinterService {
       "printOrder start order=$orderRef type=${type.name} forceLocal=$forceLocal backendOnly=$backendOnly items=${cartItems.length}",
       tag: "PRINT",
     );
-    final receiptMode = await ReceiptPrintMode.getStoredMode();
-    final receiptOrderDate =
-        orderDate == null ? null : _receiptWallTime(orderDate);
-    final bool shouldForceLocal = forceLocal;
     final num parcelTotal =
         parcelTotalOverride ?? _parcelTotalFromCart(cartItems);
 
+    if (forceLocal) {
+      throw Exception(
+          "Local receipt print disabled; backend print API required");
+    }
+    if (orderRef == null) {
+      throw Exception("Order number missing for backend receipt print");
+    }
+
     // ================= INTERNAL (Sunmi) =================
     if (type == PrinterType.internal) {
-      if (!shouldForceLocal && orderRef != null) {
-        try {
-          final printObjects = await _loadBackendPrintObjects(
-            orderId: orderId,
-            orderNumber: orderNumber,
-            type: type,
-            restaurantName: restaurantName,
-            orderType: orderType,
-            requireBothCopies: requireBothCopies,
-            counterCopyLabel: counterCopyLabel,
-            removeTaxLines: removeTaxLines,
-            parcelTotal: parcelTotal,
-            preserveBackendPrintFormat: preserveBackendPrintFormat,
-            backendTimeout:
-                backendOnly ? null : const Duration(milliseconds: 1500),
-          );
-          if (printObjects.isNotEmpty) {
-            for (final obj in printObjects) {
-              await _printWithSunmiRaw(obj);
-            }
-            kioskLog("backend Sunmi print complete order=$orderRef",
-                tag: "PRINT");
-            return;
-          }
-          if (backendOnly) {
-            throw Exception("Backend print object missing");
-          }
-        } catch (e, stackTrace) {
-          if (backendOnly) rethrow;
-          kioskLogError(
-            "backend Sunmi print failed; falling back local order=$orderRef",
-            tag: "PRINT",
-            error: e,
-            stackTrace: stackTrace,
-          );
-          // Silent fallback to local builder
+      try {
+        final printObjects = await _loadBackendPrintObjects(
+          orderId: orderId,
+          orderNumber: orderNumber,
+          type: type,
+          restaurantName: restaurantName,
+          orderType: orderType,
+          requireBothCopies: requireBothCopies,
+          counterCopyLabel: counterCopyLabel,
+          removeTaxLines: removeTaxLines,
+          parcelTotal: parcelTotal,
+          preserveBackendPrintFormat: preserveBackendPrintFormat,
+          backendTimeout: null,
+        );
+        if (printObjects.isEmpty) {
+          throw Exception("Backend print object missing");
         }
+        for (final obj in printObjects) {
+          await _printWithSunmiRaw(obj);
+        }
+        kioskLog("backend Sunmi print complete order=$orderRef", tag: "PRINT");
+        return;
+      } catch (e, stackTrace) {
+        kioskLogError(
+          "backend Sunmi print failed order=$orderRef",
+          tag: "PRINT",
+          error: e,
+          stackTrace: stackTrace,
+        );
+        rethrow;
       }
-      if (backendOnly) {
-        throw Exception("Backend print unavailable for order $orderRef");
-      }
-
-      final receiptData = await compute(_buildReceiptIsolate, {
-        "orderId": orderId,
-        "cartItems": cartItems,
-        "restaurantName": restaurantName ?? "SELFX",
-        "address": address,
-        "taxId": taxId,
-        "paymentMode": paymentMode ?? "PAID",
-        "transactionId": transactionId,
-        "orderDate": receiptOrderDate?.millisecondsSinceEpoch,
-        "taxAmount": taxAmount,
-        "discountAmount": discountAmount,
-        "footerLines": footerLines,
-        "orderType": orderType,
-        "receiptMode": receiptMode,
-        "removeTaxLines": removeTaxLines,
-      });
-
-      await _printWithSunmi(receiptData);
-      kioskLog("local Sunmi print complete order=$orderId", tag: "PRINT");
-      return;
     }
 
     // ================= USB PRINTER =================
@@ -450,85 +422,48 @@ class PrinterService {
         throw Exception("No USB printer selected");
       }
 
-      // ---- Prefer backend (Angular behavior) ----
-      if (!shouldForceLocal && orderRef != null) {
-        try {
-          final printObjects = await _loadBackendPrintObjects(
-            orderId: orderId,
-            orderNumber: orderNumber,
-            type: type,
-            restaurantName: restaurantName,
-            orderType: orderType,
-            requireBothCopies: requireBothCopies,
-            counterCopyLabel: counterCopyLabel,
-            removeTaxLines: removeTaxLines,
-            parcelTotal: parcelTotal,
-            preserveBackendPrintFormat: preserveBackendPrintFormat,
-            backendTimeout:
-                backendOnly ? null : const Duration(milliseconds: 1500),
-          );
-          if (printObjects.isNotEmpty) {
-            for (final obj in printObjects) {
-              await _usbService.printRawPrintObject(
-                printer: printer,
-                printObject: obj,
-              );
-            }
-            kioskLog("backend USB print complete order=$orderRef",
-                tag: "PRINT");
-            return;
-          }
-          if (backendOnly) {
-            throw Exception("Backend print object missing");
-          }
-        } catch (e, stackTrace) {
-          if (backendOnly) rethrow;
-          kioskLogError(
-            "backend USB print failed; falling back local order=$orderRef",
-            tag: "PRINT",
-            error: e,
-            stackTrace: stackTrace,
-          );
-          // Silent fallback to local builder
+      try {
+        final printObjects = await _loadBackendPrintObjects(
+          orderId: orderId,
+          orderNumber: orderNumber,
+          type: type,
+          restaurantName: restaurantName,
+          orderType: orderType,
+          requireBothCopies: requireBothCopies,
+          counterCopyLabel: counterCopyLabel,
+          removeTaxLines: removeTaxLines,
+          parcelTotal: parcelTotal,
+          preserveBackendPrintFormat: preserveBackendPrintFormat,
+          backendTimeout: null,
+        );
+        if (printObjects.isEmpty) {
+          throw Exception("Backend print object missing");
         }
+        for (final obj in printObjects) {
+          await _usbService.printRawPrintObject(
+            printer: printer,
+            printObject: obj,
+          );
+        }
+        kioskLog("backend USB print complete order=$orderRef", tag: "PRINT");
+        return;
+      } catch (e, stackTrace) {
+        kioskLogError(
+          "backend USB print failed order=$orderRef",
+          tag: "PRINT",
+          error: e,
+          stackTrace: stackTrace,
+        );
+        rethrow;
       }
-      if (backendOnly) {
-        throw Exception("Backend print unavailable for order $orderRef");
-      }
-
-      // ---- Fallback (offline / API failed) ----
-      final fallbackData = await compute(_buildUsbReceiptIsolate, {
-        "restaurantName": restaurantName ?? "SELFX",
-        "address": address,
-        "taxId": taxId,
-        "orderId": orderId,
-        "orderDate": receiptOrderDate?.millisecondsSinceEpoch,
-        "transactionId": transactionId,
-        "paymentMode": paymentMode ?? "PAID",
-        "cartItems": cartItems,
-        "taxAmount": taxAmount,
-        "discountAmount": discountAmount,
-        "footerLines": footerLines,
-        "orderType": orderType,
-        "receiptMode": receiptMode,
-        "removeTaxLines": removeTaxLines,
-      });
-
-      await _usbService.printData(printer: printer, printObject: fallbackData);
-      kioskLog("local USB print complete order=$orderId", tag: "PRINT");
-      return;
     }
 
     // ================= LAN PRINTER =================
     if (type == PrinterType.lan) {
-      // Angular behavior: backend handles printing
-      if (orderRef != null) {
-        await _fetchBackendPrintResponse(
-            orderId: orderId, orderNumber: orderNumber);
-        kioskLog("LAN/backend print complete order=$orderRef", tag: "PRINT");
-        return;
-      }
-      throw Exception("Order ID missing for LAN print");
+      await _fetchBackendPrintResponse(
+          orderId: orderId, orderNumber: orderNumber);
+      kioskLog("LAN/backend print complete order=$orderRef", tag: "PRINT");
+      return;
     }
   }
 
