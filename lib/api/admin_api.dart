@@ -510,6 +510,9 @@ class AdminApi {
     final price = body["price"] ?? body["item_price"];
     final isAvailable =
         body["is_available"] ?? body["isAvailable"] ?? body["available"];
+    final categoryId = body["menu_category_id"] ??
+        body["item_category_id"] ??
+        body["category_id"];
 
     if (name != null && name.toString().trim().isNotEmpty) {
       payload["name"] = name.toString().trim();
@@ -518,11 +521,11 @@ class AdminApi {
     if (isAvailable != null) {
       payload["is_available"] = _boolValue(isAvailable);
     }
+    if (categoryId != null) {
+      payload["menu_category_id"] = _numOrOriginal(categoryId);
+    }
     _copyPayloadKeys(body, payload, const [
       "menu_id",
-      "menu_category_id",
-      "item_category_id",
-      "category_id",
       "branch_id",
       "restaurant_id",
       "description",
@@ -535,11 +538,6 @@ class AdminApi {
       "modifier_ids",
       "time_slot_ids",
     ]);
-    if (!payload.containsKey("menu_category_id")) {
-      payload["menu_category_id"] = body["menu_category_id"] ??
-          body["item_category_id"] ??
-          body["category_id"];
-    }
 
     for (final imageKey in const [
       "image",

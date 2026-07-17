@@ -146,7 +146,9 @@ class _ProductsTabState extends State<ProductsTab> {
       }
 
       _applySearch();
-    } catch (e) {}
+    } catch (e) {
+      debugPrint("Failed to load admin products: $e");
+    }
 
     if (mounted) setState(() => loading = false);
   }
@@ -166,7 +168,7 @@ class _ProductsTabState extends State<ProductsTab> {
               : int.tryParse(kiosk["branch_id"].toString());
           restaurantId ??= kiosk["restaurant_id"]?.toString();
           if (branchId != null) {
-            await prefs.setInt("branch_id", branchId!);
+            await prefs.setInt("branch_id", branchId);
           }
           if (restaurantId != null && restaurantId.isNotEmpty) {
             await prefs.setString("restaurant_id", restaurantId);
@@ -408,8 +410,10 @@ class _ProductsTabState extends State<ProductsTab> {
   Future<void> _showAddProductDialog() async {
     final nameCtrl = TextEditingController();
     final priceCtrl = TextEditingController();
+    final descriptionCtrl = TextEditingController();
     final parcelCtrl = TextEditingController();
     String type = "veg";
+    bool isAvailable = true;
     bool hasVariations = false;
     final List<TextEditingController> variationNameCtrls = [];
     final List<TextEditingController> variationPriceCtrls = [];
@@ -419,6 +423,7 @@ class _ProductsTabState extends State<ProductsTab> {
     String error = "";
     bool saving = false;
     bool loadingCats = true;
+    bool requestedCats = false;
     List<Map<String, dynamic>> categories = [];
     List<Map<String, dynamic>> menus = [];
 
@@ -496,7 +501,8 @@ class _ProductsTabState extends State<ProductsTab> {
               }
             }
 
-            if (loadingCats) {
+            if (loadingCats && !requestedCats) {
+              requestedCats = true;
               loadCats();
             }
             if (hasVariations && variationNameCtrls.isEmpty) {
@@ -661,6 +667,16 @@ class _ProductsTabState extends State<ProductsTab> {
                             ),
                             const SizedBox(height: 12),
                             fieldBlock(
+                              "Description",
+                              TextField(
+                                controller: descriptionCtrl,
+                                maxLines: 2,
+                                decoration: inputDecoration(
+                                    "Short product description"),
+                              ),
+                            ),
+                            const SizedBox(height: 12),
+                            fieldBlock(
                               "Price",
                               TextField(
                                 controller: priceCtrl,
@@ -678,36 +694,33 @@ class _ProductsTabState extends State<ProductsTab> {
                               ),
                             ),
                             const SizedBox(height: 12),
-                            fieldBlock(
-                              "Menu",
-                              menus.isNotEmpty
-                                  ? DropdownButtonFormField<int>(
-                                      value: selectedMenuId,
-                                      decoration:
-                                          inputDecoration("Select menu"),
-                                      isExpanded: true,
-                                      items: [
-                                        for (final m in menus)
-                                          DropdownMenuItem<int>(
-                                            value: _menuId(m),
-                                            child: Text(_menuName(m)),
-                                          ),
-                                      ],
-                                      onChanged: (val) => setState(() {
-                                        selectedMenuId = val;
-                                      }),
-                                    )
-                                  : const Text(
-                                      "No menus available",
-                                      style: TextStyle(color: Colors.red),
-                                    ),
-                            ),
-                            const SizedBox(height: 12),
+                            if (menus.isNotEmpty) ...[
+                              fieldBlock(
+                                "Menu",
+                                DropdownButtonFormField<int>(
+                                  initialValue: selectedMenuId,
+                                  decoration:
+                                      inputDecoration("Select menu (optional)"),
+                                  isExpanded: true,
+                                  items: [
+                                    for (final m in menus)
+                                      DropdownMenuItem<int>(
+                                        value: _menuId(m),
+                                        child: Text(_menuName(m)),
+                                      ),
+                                  ],
+                                  onChanged: (val) => setState(() {
+                                    selectedMenuId = val;
+                                  }),
+                                ),
+                              ),
+                              const SizedBox(height: 12),
+                            ],
                             fieldBlock(
                               "Category",
                               categories.isNotEmpty
                                   ? DropdownButtonFormField<int>(
-                                      value: selectedCategoryId,
+                                      initialValue: selectedCategoryId,
                                       decoration: inputDecoration(
                                         "Select category",
                                       ),
@@ -727,6 +740,37 @@ class _ProductsTabState extends State<ProductsTab> {
                                       "No categories available",
                                       style: TextStyle(color: Colors.red),
                                     ),
+                            ),
+                            const SizedBox(height: 12),
+                            Container(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 12,
+                                vertical: 8,
+                              ),
+                              decoration: BoxDecoration(
+                                color: const Color(0xFFFFFBF7),
+                                borderRadius: BorderRadius.circular(12),
+                                border: Border.all(
+                                  color: const Color(0xFFEED9BC),
+                                ),
+                              ),
+                              child: SwitchListTile.adaptive(
+                                value: isAvailable,
+                                contentPadding: EdgeInsets.zero,
+                                activeThumbColor: const Color(0xFF9F342C),
+                                title: const Text(
+                                  "Available",
+                                  style: TextStyle(
+                                    fontWeight: FontWeight.w700,
+                                  ),
+                                ),
+                                subtitle: const Text(
+                                  "Show this item to customers",
+                                  style: TextStyle(fontSize: 12),
+                                ),
+                                onChanged: (val) =>
+                                    setState(() => isAvailable = val),
+                              ),
                             ),
                             const SizedBox(height: 12),
                             Column(
@@ -793,7 +837,7 @@ class _ProductsTabState extends State<ProductsTab> {
                                       addVariationRow();
                                     }
                                   }),
-                                  activeColor: const Color(0xFF9F342C),
+                                  activeThumbColor: const Color(0xFF9F342C),
                                 ),
                                 const SizedBox(width: 8),
                                 Text("Is Variation Product", style: labelStyle),
@@ -869,10 +913,10 @@ class _ProductsTabState extends State<ProductsTab> {
                                 width: double.infinity,
                                 padding: const EdgeInsets.all(10),
                                 decoration: BoxDecoration(
-                                  color: Colors.red.withOpacity(0.08),
+                                  color: Colors.red.withValues(alpha: 0.08),
                                   borderRadius: BorderRadius.circular(10),
                                   border: Border.all(
-                                    color: Colors.red.withOpacity(0.2),
+                                    color: Colors.red.withValues(alpha: 0.2),
                                   ),
                                 ),
                                 child: Text(
@@ -915,13 +959,6 @@ class _ProductsTabState extends State<ProductsTab> {
                                             return;
                                           }
 
-                                          if (selectedMenuId == null) {
-                                            setState(() {
-                                              error = "Please select a menu";
-                                            });
-                                            return;
-                                          }
-
                                           // 🔹 Prepare variations
                                           final List<Map<String, dynamic>>
                                               variations = [];
@@ -940,7 +977,9 @@ class _ProductsTabState extends State<ProductsTab> {
                                                       .trim());
 
                                               if (vName.isEmpty ||
-                                                  vPrice == null) continue;
+                                                  vPrice == null) {
+                                                continue;
+                                              }
 
                                               final Map<String, dynamic> v = {
                                                 "variation": vName,
@@ -973,15 +1012,17 @@ class _ProductsTabState extends State<ProductsTab> {
 
                                           try {
                                             final Map<String, dynamic> body = {
+                                              "name": name,
                                               "item_name": name,
+                                              "description":
+                                                  descriptionCtrl.text.trim(),
                                               "price": price,
+                                              "menu_category_id":
+                                                  selectedCategoryId!,
                                               "item_category_id":
                                                   selectedCategoryId!,
-                                              "category_id":
-                                                  selectedCategoryId!,
-                                              "is_available": 1,
+                                              "is_available": isAvailable,
                                               "type": type,
-                                              "menu_id": selectedMenuId!,
                                               "take_away_charge": parcel ?? 0,
                                               "has_variations":
                                                   hasVariations ? 1 : 0,
@@ -991,6 +1032,9 @@ class _ProductsTabState extends State<ProductsTab> {
                                                   ? variations
                                                   : [],
                                             };
+                                            if (selectedMenuId != null) {
+                                              body["menu_id"] = selectedMenuId;
+                                            }
 
                                             await _attachBranchAndRestaurant(
                                                 body);
@@ -1026,11 +1070,19 @@ class _ProductsTabState extends State<ProductsTab> {
                                               _localOverrides[createdId] = {
                                                 "item_name": name,
                                                 "name": name,
+                                                "description":
+                                                    descriptionCtrl.text.trim(),
                                                 "price": price,
                                                 "item_price": price,
                                                 "take_away_charge": parcel ?? 0,
                                                 "type": type,
                                                 "menu_id": selectedMenuId,
+                                                "is_available":
+                                                    isAvailable ? 1 : 0,
+                                                "isAvailable":
+                                                    isAvailable ? 1 : 0,
+                                                "available":
+                                                    isAvailable ? 1 : 0,
                                                 "item_category_id":
                                                     selectedCategoryId,
                                                 "category_id":
@@ -1050,17 +1102,21 @@ class _ProductsTabState extends State<ProductsTab> {
                                               await _persistOverrides();
                                             }
 
-                                            if (!mounted) return;
+                                            if (!mounted ||
+                                                !dialogContext.mounted) {
+                                              return;
+                                            }
 
                                             Navigator.pop(dialogContext);
                                             await _loadProducts();
+                                            if (!mounted) return;
 
                                             KioskMemoryService.instance
                                                 .mediaRefreshTick.value++;
 
                                             widget.onProductsUpdated();
 
-                                            ScaffoldMessenger.of(context)
+                                            ScaffoldMessenger.of(this.context)
                                                 .showSnackBar(
                                               const SnackBar(
                                                 content: Text(
@@ -1071,7 +1127,7 @@ class _ProductsTabState extends State<ProductsTab> {
                                             );
                                           } catch (e) {
                                             setState(() {
-                                              error = "Failed to add product";
+                                              error = AdminApi.errorMessage(e);
                                               saving = false;
                                             });
                                           }
@@ -1109,6 +1165,7 @@ class _ProductsTabState extends State<ProductsTab> {
     } finally {
       nameCtrl.dispose();
       priceCtrl.dispose();
+      descriptionCtrl.dispose();
       parcelCtrl.dispose();
       disposeVariationCtrls();
     }
@@ -1121,10 +1178,18 @@ class _ProductsTabState extends State<ProductsTab> {
     final priceCtrl = TextEditingController(
       text: (product["price"] ?? "").toString(),
     );
+    final descriptionCtrl = TextEditingController(
+      text: (product["description"] ??
+              product["item_description"] ??
+              product["short_description"] ??
+              "")
+          .toString(),
+    );
     final parcelCtrl = TextEditingController(
       text: (product["take_away_charge"] ?? "").toString(),
     );
     String type = (product["type"] ?? "veg").toString();
+    bool isAvailable = _isProductAvailable(product);
     bool hasVariations =
         (product["has_variations"] ?? product["has_variation"]) == 1;
     final List<TextEditingController> variationNameCtrls = [];
@@ -1137,6 +1202,7 @@ class _ProductsTabState extends State<ProductsTab> {
     String error = "";
     bool saving = false;
     bool loadingCats = true;
+    bool requestedCats = false;
     List<Map<String, dynamic>> categories = [];
     List<Map<String, dynamic>> menus = [];
     final List variationsFromApi = (product["variations"] as List?) ?? const [];
@@ -1228,7 +1294,8 @@ class _ProductsTabState extends State<ProductsTab> {
               }
             }
 
-            if (loadingCats) {
+            if (loadingCats && !requestedCats) {
+              requestedCats = true;
               loadCats();
             }
             if (hasVariations && variationNameCtrls.isEmpty) {
@@ -1400,6 +1467,16 @@ class _ProductsTabState extends State<ProductsTab> {
                             ),
                             const SizedBox(height: 12),
                             fieldBlock(
+                              "Description",
+                              TextField(
+                                controller: descriptionCtrl,
+                                maxLines: 2,
+                                decoration: inputDecoration(
+                                    "Short product description"),
+                              ),
+                            ),
+                            const SizedBox(height: 12),
+                            fieldBlock(
                               "Price",
                               TextField(
                                 controller: priceCtrl,
@@ -1417,36 +1494,33 @@ class _ProductsTabState extends State<ProductsTab> {
                               ),
                             ),
                             const SizedBox(height: 12),
-                            fieldBlock(
-                              "Menu",
-                              menus.isNotEmpty
-                                  ? DropdownButtonFormField<int>(
-                                      value: selectedMenuId,
-                                      decoration:
-                                          inputDecoration("Select menu"),
-                                      isExpanded: true,
-                                      items: [
-                                        for (final m in menus)
-                                          DropdownMenuItem<int>(
-                                            value: _menuId(m),
-                                            child: Text(_menuName(m)),
-                                          ),
-                                      ],
-                                      onChanged: (val) => setState(() {
-                                        selectedMenuId = val;
-                                      }),
-                                    )
-                                  : const Text(
-                                      "No menus available",
-                                      style: TextStyle(color: Colors.red),
-                                    ),
-                            ),
-                            const SizedBox(height: 12),
+                            if (menus.isNotEmpty) ...[
+                              fieldBlock(
+                                "Menu",
+                                DropdownButtonFormField<int>(
+                                  initialValue: selectedMenuId,
+                                  decoration:
+                                      inputDecoration("Select menu (optional)"),
+                                  isExpanded: true,
+                                  items: [
+                                    for (final m in menus)
+                                      DropdownMenuItem<int>(
+                                        value: _menuId(m),
+                                        child: Text(_menuName(m)),
+                                      ),
+                                  ],
+                                  onChanged: (val) => setState(() {
+                                    selectedMenuId = val;
+                                  }),
+                                ),
+                              ),
+                              const SizedBox(height: 12),
+                            ],
                             fieldBlock(
                               "Category",
                               categories.isNotEmpty
                                   ? DropdownButtonFormField<int>(
-                                      value: selectedCategoryId,
+                                      initialValue: selectedCategoryId,
                                       decoration: inputDecoration(
                                         "Select category",
                                       ),
@@ -1466,6 +1540,37 @@ class _ProductsTabState extends State<ProductsTab> {
                                       "No categories available",
                                       style: TextStyle(color: Colors.red),
                                     ),
+                            ),
+                            const SizedBox(height: 12),
+                            Container(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 12,
+                                vertical: 8,
+                              ),
+                              decoration: BoxDecoration(
+                                color: const Color(0xFFFFFBF7),
+                                borderRadius: BorderRadius.circular(12),
+                                border: Border.all(
+                                  color: const Color(0xFFEED9BC),
+                                ),
+                              ),
+                              child: SwitchListTile.adaptive(
+                                value: isAvailable,
+                                contentPadding: EdgeInsets.zero,
+                                activeThumbColor: const Color(0xFF9F342C),
+                                title: const Text(
+                                  "Available",
+                                  style: TextStyle(
+                                    fontWeight: FontWeight.w700,
+                                  ),
+                                ),
+                                subtitle: const Text(
+                                  "Show this item to customers",
+                                  style: TextStyle(fontSize: 12),
+                                ),
+                                onChanged: (val) =>
+                                    setState(() => isAvailable = val),
+                              ),
                             ),
                             const SizedBox(height: 12),
                             Column(
@@ -1532,7 +1637,7 @@ class _ProductsTabState extends State<ProductsTab> {
                                       addVariationRow();
                                     }
                                   }),
-                                  activeColor: const Color(0xFF9F342C),
+                                  activeThumbColor: const Color(0xFF9F342C),
                                 ),
                                 const SizedBox(width: 8),
                                 Text("Is Variation Product", style: labelStyle),
@@ -1609,10 +1714,10 @@ class _ProductsTabState extends State<ProductsTab> {
                                 width: double.infinity,
                                 padding: const EdgeInsets.all(10),
                                 decoration: BoxDecoration(
-                                  color: Colors.red.withOpacity(0.08),
+                                  color: Colors.red.withValues(alpha: 0.08),
                                   borderRadius: BorderRadius.circular(10),
                                   border: Border.all(
-                                    color: Colors.red.withOpacity(0.2),
+                                    color: Colors.red.withValues(alpha: 0.2),
                                   ),
                                 ),
                                 child: Text(
@@ -1654,13 +1759,6 @@ class _ProductsTabState extends State<ProductsTab> {
                                             return;
                                           }
 
-                                          if (selectedMenuId == null) {
-                                            setState(() {
-                                              error = "Please select a menu";
-                                            });
-                                            return;
-                                          }
-
                                           final List<Map<String, dynamic>>
                                               variations = [];
 
@@ -1678,7 +1776,9 @@ class _ProductsTabState extends State<ProductsTab> {
                                                       .trim());
 
                                               if (vName.isEmpty ||
-                                                  vPrice == null) continue;
+                                                  vPrice == null) {
+                                                continue;
+                                              }
 
                                               final Map<String, dynamic> v = {
                                                 "variation": vName,
@@ -1736,16 +1836,15 @@ class _ProductsTabState extends State<ProductsTab> {
                                             }
 
                                             final Map<String, dynamic> body = {
+                                              "name": name,
                                               "item_name": name,
+                                              "description":
+                                                  descriptionCtrl.text.trim(),
                                               "price": price,
-                                              "item_category_id":
+                                              "menu_category_id":
                                                   selectedCategoryId!,
-                                              "category_id":
-                                                  selectedCategoryId!,
-                                              "is_available":
-                                                  product["is_available"] ?? 1,
+                                              "is_available": isAvailable,
                                               "type": type,
-                                              "menu_id": selectedMenuId!,
                                               "item_id": itemId,
                                               "id": itemId,
                                               "take_away_charge": parcel ?? 0,
@@ -1757,6 +1856,9 @@ class _ProductsTabState extends State<ProductsTab> {
                                                   ? variations
                                                   : [],
                                             };
+                                            if (selectedMenuId != null) {
+                                              body["menu_id"] = selectedMenuId;
+                                            }
 
                                             await _attachBranchAndRestaurant(
                                                 body);
@@ -1771,11 +1873,18 @@ class _ProductsTabState extends State<ProductsTab> {
                                             _localOverrides[itemId] = {
                                               "item_name": name,
                                               "name": name,
+                                              "description":
+                                                  descriptionCtrl.text.trim(),
                                               "price": price,
                                               "item_price": price,
                                               "take_away_charge": parcel ?? 0,
                                               "type": type,
                                               "menu_id": selectedMenuId,
+                                              "is_available":
+                                                  isAvailable ? 1 : 0,
+                                              "isAvailable":
+                                                  isAvailable ? 1 : 0,
+                                              "available": isAvailable ? 1 : 0,
                                               "item_category_id":
                                                   selectedCategoryId,
                                               "category_id": selectedCategoryId,
@@ -1823,16 +1932,18 @@ class _ProductsTabState extends State<ProductsTab> {
                                               });
                                             }
 
+                                            if (!dialogContext.mounted) return;
                                             Navigator.pop(dialogContext);
 
                                             await _loadProducts();
+                                            if (!mounted) return;
 
                                             KioskMemoryService.instance
                                                 .mediaRefreshTick.value++;
 
                                             widget.onProductsUpdated();
 
-                                            ScaffoldMessenger.of(context)
+                                            ScaffoldMessenger.of(this.context)
                                                 .showSnackBar(
                                               const SnackBar(
                                                 content: Text(
@@ -1843,8 +1954,7 @@ class _ProductsTabState extends State<ProductsTab> {
                                             );
                                           } catch (e) {
                                             setState(() {
-                                              error =
-                                                  "Failed to update product";
+                                              error = AdminApi.errorMessage(e);
                                               saving = false;
                                             });
                                           }
@@ -1882,6 +1992,7 @@ class _ProductsTabState extends State<ProductsTab> {
     } finally {
       nameCtrl.dispose();
       priceCtrl.dispose();
+      descriptionCtrl.dispose();
       parcelCtrl.dispose();
       disposeVariationCtrls();
     }
@@ -1923,6 +2034,7 @@ class _ProductsTabState extends State<ProductsTab> {
       };
       await _persistOverrides();
 
+      if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text("Product ${available ? 'Enabled' : 'Disabled'}"),
@@ -2141,7 +2253,7 @@ class _ProductsTabState extends State<ProductsTab> {
         borderRadius: BorderRadius.circular(18),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(0.04),
+            color: Colors.black.withValues(alpha: 0.04),
             blurRadius: 12,
             offset: const Offset(0, 5),
           ),
@@ -2208,7 +2320,7 @@ class _ProductsTabState extends State<ProductsTab> {
                 if (!isActive)
                   Container(
                     decoration: BoxDecoration(
-                      color: Colors.black.withOpacity(0.3),
+                      color: Colors.black.withValues(alpha: 0.3),
                       borderRadius: const BorderRadius.vertical(
                         top: Radius.circular(18),
                       ),
@@ -2308,7 +2420,8 @@ class _ProductsTabState extends State<ProductsTab> {
                           scale: 0.75,
                           child: Switch.adaptive(
                             value: isActive,
-                            activeColor: const Color.fromARGB(255, 63, 159, 44),
+                            activeThumbColor:
+                                const Color.fromARGB(255, 63, 159, 44),
                             onChanged: (val) =>
                                 _updateAvailability(_itemId(p), val),
                           ),
@@ -2340,9 +2453,9 @@ class _ProductsTabState extends State<ProductsTab> {
     return Container(
       padding: padding,
       decoration: BoxDecoration(
-        color: color.withOpacity(0.12),
+        color: color.withValues(alpha: 0.12),
         borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: color.withOpacity(0.35)),
+        border: Border.all(color: color.withValues(alpha: 0.35)),
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
@@ -2372,9 +2485,9 @@ class _ProductsTabState extends State<ProductsTab> {
         vertical: compact ? 4 : 6,
       ),
       decoration: BoxDecoration(
-        color: color.withOpacity(0.12),
+        color: color.withValues(alpha: 0.12),
         borderRadius: BorderRadius.circular(999),
-        border: Border.all(color: color.withOpacity(0.35)),
+        border: Border.all(color: color.withValues(alpha: 0.35)),
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
