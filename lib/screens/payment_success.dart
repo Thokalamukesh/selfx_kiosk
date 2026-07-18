@@ -8,13 +8,11 @@ import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:api_selfxo_project/background_image/background_image.dart';
-import 'package:api_selfxo_project/core/india_time.dart';
 import 'package:api_selfxo_project/core/kiosk_config.dart';
 import 'package:api_selfxo_project/core/kiosk_log.dart';
 import 'package:api_selfxo_project/core/kiosk_restaurant_meta.dart';
 import 'package:api_selfxo_project/core/kiosk_memory_service.dart';
 import 'package:api_selfxo_project/printer/printer_s.dart';
-import 'package:api_selfxo_project/api/kiosk_api.dart';
 
 enum PrinterStatus { printing, success, error }
 
@@ -230,21 +228,8 @@ class _PaymentSuccessDialogState extends State<PaymentSuccessDialog>
               prefs.getString(KioskRestaurantMeta.taxIdKey))
           : null;
 
-      String? transactionId = widget.transactionId;
-      DateTime? orderDate = widget.orderDate;
       String? publicOrderNumber =
           _normalizeOrderNumber(widget.publicOrderNumber);
-      if (transactionId == null ||
-          orderDate == null ||
-          publicOrderNumber == null) {
-        try {
-          final res = await KioskApi().getOrderDetails(widget.orderNumber);
-          final raw = res.data;
-          transactionId ??= _findTxnId(raw);
-          orderDate ??= _parseOrderDate(raw);
-          publicOrderNumber ??= _findOrderNumber(raw);
-        } catch (_) {}
-      }
       final backendOrderNumber = _normalizeOrderNumber(publicOrderNumber);
       kioskLog(
         "Success receipt print order=${backendOrderNumber ?? widget.orderNumber.toString()}",
@@ -257,8 +242,8 @@ class _PaymentSuccessDialogState extends State<PaymentSuccessDialog>
         restaurantName: restaurantName,
         taxId: taxId,
         paymentMode: "PAID",
-        transactionId: transactionId,
-        orderDate: orderDate,
+        transactionId: widget.transactionId,
+        orderDate: widget.orderDate,
         orderType: widget.orderType,
         orderNumber: backendOrderNumber,
         backendOnly: true,
@@ -323,98 +308,6 @@ class _PaymentSuccessDialogState extends State<PaymentSuccessDialog>
     return [category, "COUNTER"];
   }
 
-  String? _findTxnId(dynamic value) {
-    const keys = [
-      "transaction_id",
-      "payment_id",
-      "txn_id",
-      "transactionId",
-      "paymentId",
-      "razorpay_payment_id",
-      "payment_reference",
-      "payment_txn_id",
-      "txnid",
-      "txnId",
-    ];
-
-    if (value is Map) {
-      for (final k in keys) {
-        if (value.containsKey(k) && value[k] != null) {
-          final v = value[k];
-          if (v.toString().trim().isNotEmpty) return v.toString().trim();
-        }
-      }
-      for (final entry in value.entries) {
-        final found = _findTxnId(entry.value);
-        if (found != null) return found;
-      }
-    } else if (value is List) {
-      for (final item in value) {
-        final found = _findTxnId(item);
-        if (found != null) return found;
-      }
-    }
-    return null;
-  }
-
-  DateTime? _parseOrderDate(dynamic value) {
-    final keys = [
-      "created_at",
-      "order_date",
-      "date",
-      "createdAt",
-      "placed_at",
-      "order_time",
-    ];
-    if (value is Map) {
-      for (final k in keys) {
-        final v = value[k];
-        final parsed = _parseDateValue(v);
-        if (parsed != null) return parsed;
-      }
-      for (final entry in value.entries) {
-        final parsed = _parseOrderDate(entry.value);
-        if (parsed != null) return parsed;
-      }
-    } else if (value is List) {
-      for (final item in value) {
-        final parsed = _parseOrderDate(item);
-        if (parsed != null) return parsed;
-      }
-    }
-    return null;
-  }
-
-  String? _findOrderNumber(dynamic value) {
-    const keys = [
-      "order_number",
-      "orderNumber",
-      "order_no",
-      "orderNo",
-      "invoice_number",
-      "invoiceNumber",
-      "public_order_number",
-      "publicOrderNumber",
-      "number",
-    ];
-    if (value is Map) {
-      for (final k in keys) {
-        final raw = _normalizeOrderNumber(value[k]);
-        if (raw != null) return raw;
-      }
-      for (final entry in value.entries) {
-        final found = _findOrderNumber(entry.value);
-        if (found != null) return found;
-      }
-    } else if (value is List) {
-      for (final item in value) {
-        final found = _findOrderNumber(item);
-        if (found != null) return found;
-      }
-    }
-    return null;
-  }
-
   String? _normalizeOrderNumber(dynamic raw) {
     final value = raw?.toString().trim();
     if (value == null ||
@@ -425,14 +318,6 @@ class _PaymentSuccessDialogState extends State<PaymentSuccessDialog>
       return null;
     }
     return value;
-  }
-
-  DateTime? _parseDateValue(dynamic v) {
-    if (v == null) return null;
-    try {
-      return IndiaTime.parseDateValue(v);
-    } catch (_) {}
-    return null;
   }
 
   // ================= AUTO CLOSE =================

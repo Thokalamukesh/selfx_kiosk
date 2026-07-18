@@ -45,7 +45,7 @@ List<String> _receiptFooterLines(dynamic raw) {
 
 class PrinterService {
   final _usbService = EpsonUSBPrinterService();
-  final Map<String, Uint8List> _printImageCache = {};
+  static final Map<String, Uint8List> _printImageCache = {};
   static const _usbPrinterConfigKey = "selected_usb_printer";
 
   bool _isTakeAwayOrder(String? orderType) {
@@ -3411,8 +3411,9 @@ class PrinterService {
       options: Options(
         responseType: ResponseType.bytes,
         followRedirects: true,
-        receiveTimeout: const Duration(seconds: 8),
-        sendTimeout: const Duration(seconds: 4),
+        connectTimeout: const Duration(seconds: 3),
+        receiveTimeout: const Duration(seconds: 5),
+        sendTimeout: const Duration(seconds: 3),
       ),
     );
     final data = res.data;
