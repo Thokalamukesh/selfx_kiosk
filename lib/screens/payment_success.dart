@@ -266,6 +266,7 @@ class _PaymentSuccessDialogState extends State<PaymentSuccessDialog>
         requireBothCopies: false,
         counterCopyLabel: false,
         removeTaxLines: !showTaxInReceipt,
+        suppressCopyLabels: true,
       );
 
       if (!mounted) return;

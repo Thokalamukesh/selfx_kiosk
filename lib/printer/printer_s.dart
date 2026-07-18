@@ -225,6 +225,21 @@ class PrinterService {
     return out;
   }
 
+  List<dynamic> _withoutCopyLabelTextCommands(List<dynamic> printObject) {
+    final out = <dynamic>[];
+    for (final entry in printObject) {
+      if (entry is Map) {
+        final type = entry['type']?.toString().trim().toLowerCase() ?? '';
+        final text = entry['text']?.toString() ?? '';
+        if (type == 'text' && _isCopyLabelText(text)) {
+          continue;
+        }
+      }
+      out.add(entry);
+    }
+    return out;
+  }
+
   List<dynamic> _withoutCounterLogoCommands(List<dynamic> printObject) {
     final wholeObjectIsCounter = _hasCounterLabel(printObject);
     var inCounterCopy = wholeObjectIsCounter;
@@ -401,6 +416,7 @@ class PrinterService {
     bool requireBothCopies = false,
     bool counterCopyLabel = false,
     bool removeTaxLines = false,
+    bool suppressCopyLabels = false,
     num? parcelTotalOverride,
   }) async {
     final type = await _getPrinterType();
@@ -435,6 +451,7 @@ class PrinterService {
           requireBothCopies: requireBothCopies,
           counterCopyLabel: counterCopyLabel,
           removeTaxLines: removeTaxLines,
+          suppressCopyLabels: suppressCopyLabels,
           parcelTotal: parcelTotal,
           preserveBackendPrintFormat: preserveBackendPrintFormat,
           backendTimeout: null,
@@ -475,6 +492,7 @@ class PrinterService {
           requireBothCopies: requireBothCopies,
           counterCopyLabel: counterCopyLabel,
           removeTaxLines: removeTaxLines,
+          suppressCopyLabels: suppressCopyLabels,
           parcelTotal: parcelTotal,
           preserveBackendPrintFormat: preserveBackendPrintFormat,
           backendTimeout: null,
@@ -547,6 +565,7 @@ class PrinterService {
     required bool requireBothCopies,
     required bool counterCopyLabel,
     required bool removeTaxLines,
+    required bool suppressCopyLabels,
     required num parcelTotal,
     required bool preserveBackendPrintFormat,
     Duration? backendTimeout,
@@ -605,6 +624,8 @@ class PrinterService {
 
     var printObjects = selectedRawPrintObjects
         .map(_withoutCounterLogoCommands)
+        .map((object) =>
+            suppressCopyLabels ? _withoutCopyLabelTextCommands(object) : object)
         .map((object) => _normalizeBackendPrintObject(
               object,
               lineWidth: lineWidth,
@@ -2689,6 +2710,14 @@ class PrinterService {
     return value == 'counter' ||
         value == 'counter copy' ||
         value.contains('counter copy');
+  }
+
+  bool _isCopyLabelText(String text) {
+    final value = text.trim().toLowerCase();
+    return value == 'copy' ||
+        value == 'customer copy' ||
+        _isCounterCopyText(text) ||
+        _isDuplicateCopyText(text);
   }
 
   bool _hasPrintableBackendContent(List<dynamic> entries) {
