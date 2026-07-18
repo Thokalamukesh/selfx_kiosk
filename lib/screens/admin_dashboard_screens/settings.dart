@@ -3,6 +3,7 @@ import 'package:api_selfxo_project/printer/epson_usb_printer_service.dart';
 import 'package:api_selfxo_project/printer/printer_s.dart';
 import 'package:api_selfxo_project/core/receipt_print_mode.dart';
 import 'package:api_selfxo_project/core/kiosk_restaurant_meta.dart';
+import 'package:api_selfxo_project/core/menu_sync.dart';
 import 'package:api_selfxo_project/api/admin_api.dart';
 import 'package:api_selfxo_project/core/order_utils.dart';
 import 'package:flutter/material.dart';
@@ -574,6 +575,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _settingsData ??= {};
       _settingsData!.addAll(body);
       OrderUtils.notifyInfoUpdated();
+      MenuSync.notifyUpdated();
       _showSnackBar("Display settings updated", Colors.green);
     } catch (_) {
       _showSnackBar("Failed to update display settings", Colors.red);

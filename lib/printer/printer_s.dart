@@ -552,11 +552,7 @@ class PrinterService {
         generatedCounterCopyIndexes.add(1);
       }
     } else {
-      selectedRawPrintObjects.add(
-        rawCustomerCopies.isNotEmpty
-            ? rawCustomerCopies.first
-            : rawPrintObjects.first,
-      );
+      selectedRawPrintObjects.addAll(rawPrintObjects);
     }
 
     var printObjects = selectedRawPrintObjects

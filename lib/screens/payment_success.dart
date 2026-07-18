@@ -13,7 +13,6 @@ import 'package:api_selfxo_project/core/kiosk_config.dart';
 import 'package:api_selfxo_project/core/kiosk_log.dart';
 import 'package:api_selfxo_project/core/kiosk_restaurant_meta.dart';
 import 'package:api_selfxo_project/core/kiosk_memory_service.dart';
-import 'package:api_selfxo_project/core/receipt_print_mode.dart';
 import 'package:api_selfxo_project/printer/printer_s.dart';
 import 'package:api_selfxo_project/api/kiosk_api.dart';
 
@@ -226,8 +225,6 @@ class _PaymentSuccessDialogState extends State<PaymentSuccessDialog>
           "OUR KITCHEN";
       final showTaxInReceipt =
           await KioskRestaurantMeta.getStoredShowTaxInReceipt();
-      final receiptMode = await ReceiptPrintMode.getStoredMode();
-      final printBothCopies = receiptMode == "both";
       final taxId = showTaxInReceipt
           ? (prefs.getString(KioskRestaurantMeta.gstNumberKey) ??
               prefs.getString(KioskRestaurantMeta.taxIdKey))
@@ -266,8 +263,8 @@ class _PaymentSuccessDialogState extends State<PaymentSuccessDialog>
         orderNumber: backendOrderNumber,
         backendOnly: true,
         preserveBackendPrintFormat: true,
-        requireBothCopies: printBothCopies,
-        counterCopyLabel: printBothCopies,
+        requireBothCopies: false,
+        counterCopyLabel: false,
         removeTaxLines: !showTaxInReceipt,
       );
 
