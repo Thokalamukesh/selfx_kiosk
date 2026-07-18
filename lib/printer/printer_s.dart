@@ -240,53 +240,6 @@ class PrinterService {
     return out;
   }
 
-  List<dynamic> _withoutCounterLogoCommands(List<dynamic> printObject) {
-    final wholeObjectIsCounter = _hasCounterLabel(printObject);
-    var inCounterCopy = wholeObjectIsCounter;
-    final out = <dynamic>[];
-
-    for (final entry in printObject) {
-      if (entry is Map && _isInterCopyMarker(entry)) {
-        inCounterCopy = true;
-        out.add(entry);
-        continue;
-      }
-      if (inCounterCopy && _isBackendLogoCommand(entry)) {
-        continue;
-      }
-      out.add(entry);
-    }
-
-    return out;
-  }
-
-  bool _isBackendLogoCommand(dynamic entry) {
-    if (entry is! Map) return false;
-    final type = entry['type']?.toString().trim().toLowerCase() ?? '';
-    if (type == 'logo' ||
-        type == 'powered_by' ||
-        type == 'poweredby' ||
-        type == 'powered-by') {
-      return true;
-    }
-    if (type != 'image') return false;
-    final source = [
-      entry['url'],
-      entry['src'],
-      entry['image_url'],
-      entry['imageUrl'],
-    ].map((value) => value?.toString().trim().toLowerCase() ?? '').join(' ');
-    return entry.containsKey('logo_url') ||
-        entry.containsKey('logoUrl') ||
-        entry.containsKey('logo_base64') ||
-        entry.containsKey('logoBase64') ||
-        entry.containsKey('powered_by_url') ||
-        entry.containsKey('poweredByUrl') ||
-        source.contains('logo') ||
-        source.contains('branding') ||
-        _isFooterImage(entry);
-  }
-
   bool _hasCounterLabel(List<dynamic> printObject) {
     for (final entry in printObject) {
       if (entry is Map &&
@@ -623,7 +576,6 @@ class PrinterService {
     }
 
     var printObjects = selectedRawPrintObjects
-        .map(_withoutCounterLogoCommands)
         .map((object) =>
             suppressCopyLabels ? _withoutCopyLabelTextCommands(object) : object)
         .map((object) => _normalizeBackendPrintObject(
