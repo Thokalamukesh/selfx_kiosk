@@ -4,6 +4,7 @@ import 'dart:async';
 import 'dart:html' as html;
 import 'dart:ui_web' as ui_web;
 
+import 'package:api_selfxo_project/core/kiosk_log.dart';
 import 'package:flutter/material.dart';
 
 int _nextNetworkImageId = 0;
@@ -19,6 +20,7 @@ class AppNetworkImage extends StatefulWidget {
   final Widget fallback;
   final bool gaplessPlayback;
   final bool preferPlatformView;
+  final String? debugLabel;
 
   const AppNetworkImage({
     super.key,
@@ -32,6 +34,7 @@ class AppNetworkImage extends StatefulWidget {
     this.cacheHeight,
     this.gaplessPlayback = false,
     this.preferPlatformView = true,
+    this.debugLabel,
   });
 
   @override
@@ -44,9 +47,11 @@ class _AppNetworkImageState extends State<AppNetworkImage> {
   StreamSubscription<html.Event>? _loadSub;
   StreamSubscription<html.Event>? _errorSub;
   bool _htmlError = false;
+  bool _htmlLoaded = false;
   bool _disposed = false;
   bool _usePlatformView = false;
   String? _platformViewUrl;
+  Timer? _loadTimeout;
 
   @override
   void initState() {
@@ -62,6 +67,7 @@ class _AppNetworkImageState extends State<AppNetworkImage> {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.url != widget.url) {
       _htmlError = false;
+      _htmlLoaded = false;
       _platformViewUrl = null;
       if (!widget.preferPlatformView) {
         _usePlatformView = false;
@@ -84,15 +90,26 @@ class _AppNetworkImageState extends State<AppNetworkImage> {
   void _bindEvents(html.ImageElement imageElement) {
     _loadSub?.cancel();
     _errorSub?.cancel();
+    _loadTimeout?.cancel();
     _loadSub = imageElement.onLoad.listen((_) {
       if (!mounted || _disposed) return;
-      if (_htmlError) {
-        setState(() => _htmlError = false);
-      }
+      _loadTimeout?.cancel();
+      final width = imageElement.naturalWidth;
+      final height = imageElement.naturalHeight;
+      _log("loaded url=${_safeUrl(widget.url)} natural=${width}x$height");
+      setState(() {
+        _htmlError = false;
+        _htmlLoaded = true;
+      });
     });
     _errorSub = imageElement.onError.listen((_) {
       if (!mounted || _disposed) return;
-      setState(() => _htmlError = true);
+      _loadTimeout?.cancel();
+      _log("error url=${_safeUrl(widget.url)}");
+      setState(() {
+        _htmlError = true;
+        _htmlLoaded = false;
+      });
     });
   }
 
@@ -101,6 +118,8 @@ class _AppNetworkImageState extends State<AppNetworkImage> {
     final url = widget.url.trim();
     if (url.isEmpty) {
       _htmlError = true;
+      _htmlLoaded = false;
+      _log("empty url");
       return;
     }
 
@@ -114,7 +133,10 @@ class _AppNetworkImageState extends State<AppNetworkImage> {
     final imageElement = _imageElement ?? html.ImageElement();
     _imageElement = imageElement;
     _platformViewUrl = url;
+    _htmlError = false;
+    _htmlLoaded = false;
     _bindEvents(imageElement);
+    _log("start platform_view url=${_safeUrl(url)} fit=${widget.fit.name}");
 
     imageElement
       ..src = url
@@ -130,6 +152,27 @@ class _AppNetworkImageState extends State<AppNetworkImage> {
       ..style.userSelect = 'none'
       ..style.objectFit = _cssFit(widget.fit)
       ..style.objectPosition = _cssAlignment(widget.alignment);
+
+    if (imageElement.complete == true && imageElement.naturalWidth > 0) {
+      _loadTimeout?.cancel();
+      _log(
+        "loaded-from-cache url=${_safeUrl(url)} natural=${imageElement.naturalWidth}x${imageElement.naturalHeight}",
+      );
+      _htmlLoaded = true;
+      _htmlError = false;
+      return;
+    }
+
+    _loadTimeout = Timer(const Duration(seconds: 8), () {
+      if (!mounted || _disposed || _platformViewUrl != url || _htmlLoaded) {
+        return;
+      }
+      _log("timeout url=${_safeUrl(url)}");
+      setState(() {
+        _htmlError = true;
+        _htmlLoaded = false;
+      });
+    });
   }
 
   void _switchToPlatformView() {
@@ -169,27 +212,43 @@ class _AppNetworkImageState extends State<AppNetworkImage> {
     _disposed = true;
     _loadSub?.cancel();
     _errorSub?.cancel();
+    _loadTimeout?.cancel();
     _imageElement
       ?..src = ''
       ..remove();
     super.dispose();
   }
 
+  void _log(String message) {
+    final label = widget.debugLabel?.trim();
+    if (label == null || label.isEmpty) return;
+    kioskLog("$label $message", tag: "IMAGE");
+  }
+
+  String _safeUrl(String value) {
+    final clean = value.replaceAll(RegExp(r'[\r\n\t]'), ' ').trim();
+    return clean.length <= 160 ? clean : "${clean.substring(0, 160)}...";
+  }
+
   @override
   Widget build(BuildContext context) {
     final url = widget.url.trim();
     if (url.isEmpty) {
+      _log("fallback reason=empty");
       return widget.fallback;
     }
 
     if (_usePlatformView) {
       if (_htmlError || _viewType == null) {
+        _log(
+          "fallback reason=${_viewType == null ? 'no_view_type' : 'html_error'}",
+        );
         return widget.fallback;
       }
       if (_platformViewUrl != url) {
         _ensurePlatformView();
       }
-      return SizedBox(
+      final platformView = SizedBox(
         width: widget.width,
         height: widget.height,
         child: IgnorePointer(
@@ -197,6 +256,16 @@ class _AppNetworkImageState extends State<AppNetworkImage> {
           child: HtmlElementView(viewType: _viewType!),
         ),
       );
+      if (!_htmlLoaded) {
+        return Stack(
+          fit: StackFit.expand,
+          children: [
+            widget.fallback,
+            Opacity(opacity: 0, child: platformView),
+          ],
+        );
+      }
+      return platformView;
     }
 
     return SizedBox(
@@ -213,6 +282,8 @@ class _AppNetworkImageState extends State<AppNetworkImage> {
         gaplessPlayback: widget.gaplessPlayback,
         filterQuality: FilterQuality.low,
         errorBuilder: (_, __, ___) {
+          _log(
+              "flutter-image error switching-to-platform-view url=${_safeUrl(url)}");
           WidgetsBinding.instance.addPostFrameCallback((_) {
             _switchToPlatformView();
           });

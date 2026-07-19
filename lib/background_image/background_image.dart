@@ -36,6 +36,7 @@ class _WelcomeScreenState extends State<WelcomeScreen>
   VoidCallback? _mediaRefreshListener;
   VoidCallback? _restaurantInfoListener;
   int _mediaRefreshKey = 0;
+  int _welcomeLoadSeq = 0;
 
   bool isLoading = true;
   bool hasError = false;
@@ -109,14 +110,25 @@ class _WelcomeScreenState extends State<WelcomeScreen>
   }
 
   Future<void> _loadRestaurant() async {
-    if (_loadingRestaurant) return;
+    if (_loadingRestaurant) {
+      kioskLog("load skipped reason=in_flight", tag: "WELCOME");
+      return;
+    }
     _loadingRestaurant = true;
     _bootstrapForbidden = false;
+    final loadId = ++_welcomeLoadSeq;
+    final startedAt = DateTime.now();
+    kioskLog("load#$loadId start", tag: "WELCOME");
     try {
       await DeviceBootstrap.ensureDeviceReady();
+      kioskLog("load#$loadId device-ready", tag: "WELCOME");
       final prefs = await SharedPreferences.getInstance();
       final savedDisplayName = _storedDisplayName(prefs);
       final res = await KioskApi().getRestaurantData();
+      kioskLog(
+        "load#$loadId bootstrap status=${res.statusCode} keys=${res.data is Map ? (res.data as Map).keys.take(12).join(',') : res.data.runtimeType}",
+        tag: "WELCOME",
+      );
 
       final restaurant = res.data["restaurant"];
       final media = restaurant?["media"];
@@ -188,6 +200,10 @@ class _WelcomeScreenState extends State<WelcomeScreen>
           ...mediaBanners.where((url) => !tempBanners.contains(url)),
         ];
       }
+      kioskLog(
+        "load#$loadId slides extracted count=${tempBanners.length} urls=${_shortUrlList(tempBanners)}",
+        tag: "WELCOME",
+      );
 
       if (tempBanners.isEmpty) {
         final savedBackgroundUrl = normalizeImageUrl(
@@ -196,6 +212,10 @@ class _WelcomeScreenState extends State<WelcomeScreen>
         );
         if (isSupportedRasterImageUrl(savedBackgroundUrl)) {
           tempBanners.add(savedBackgroundUrl);
+          kioskLog(
+            "load#$loadId using saved background ${_safeLogUrl(savedBackgroundUrl)}",
+            tag: "WELCOME",
+          );
         }
       }
 
@@ -209,6 +229,10 @@ class _WelcomeScreenState extends State<WelcomeScreen>
           final bannerUrl = normalizeImageUrl(rawUrl);
           if (isSupportedRasterImageUrl(bannerUrl)) {
             tempBanners.add(bannerUrl);
+            kioskLog(
+              "load#$loadId using first image fallback ${_safeLogUrl(bannerUrl)}",
+              tag: "WELCOME",
+            );
             break;
           }
         }
@@ -249,6 +273,10 @@ class _WelcomeScreenState extends State<WelcomeScreen>
         _errorDetails = null;
       });
 
+      kioskLog(
+        "load#$loadId ready ms=${DateTime.now().difference(startedAt).inMilliseconds} name=$restaurantName banners=${banners.length} current=${banners.isEmpty ? '-' : _safeLogUrl(banners[currentIndex])} logo=${restaurantLogoUrl == null ? '-' : _safeLogUrl(restaurantLogoUrl!)} dine=$_showDineIn pickup=$_showPickup",
+        tag: "WELCOME",
+      );
       _startSlider();
     } catch (e) {
       final forbidden = KioskApi.isBootstrapForbiddenError(e);
@@ -257,7 +285,7 @@ class _WelcomeScreenState extends State<WelcomeScreen>
         return;
       }
       kioskLogError(
-        "Restaurant bootstrap failed",
+        "load#$loadId failed ms=${DateTime.now().difference(startedAt).inMilliseconds}",
         tag: "WELCOME",
         error: e,
       );
@@ -275,6 +303,10 @@ class _WelcomeScreenState extends State<WelcomeScreen>
       });
     } finally {
       _loadingRestaurant = false;
+      kioskLog(
+        "load#$loadId end loading=$_loadingRestaurant isLoading=$isLoading hasError=$hasError closed=$_restaurantClosed",
+        tag: "WELCOME",
+      );
     }
   }
 
@@ -294,6 +326,16 @@ class _WelcomeScreenState extends State<WelcomeScreen>
         text.contains("time up") ||
         text.contains("closed now");
     return isClosed ? _defaultClosedMessage : null;
+  }
+
+  String _shortUrlList(List<String> urls) {
+    if (urls.isEmpty) return "-";
+    return urls.take(4).map(_safeLogUrl).join(" | ");
+  }
+
+  String _safeLogUrl(String value) {
+    final clean = value.replaceAll(RegExp(r'[\r\n\t]'), ' ').trim();
+    return clean.length <= 140 ? clean : "${clean.substring(0, 140)}...";
   }
 
   String? _firstImageUrl(Map? data) {
@@ -672,8 +714,18 @@ class _WelcomeScreenState extends State<WelcomeScreen>
 
   void _startSlider() {
     _sliderTimer?.cancel();
-    if (!KioskConfig.enableAutoScroll) return;
-    if (banners.length < 2) return;
+    if (!KioskConfig.enableAutoScroll) {
+      kioskLog("slider disabled", tag: "WELCOME");
+      return;
+    }
+    if (banners.length < 2) {
+      kioskLog("slider not-started banners=${banners.length}", tag: "WELCOME");
+      return;
+    }
+    kioskLog(
+      "slider start interval=${_sliderIntervalSeconds}s banners=${banners.length}",
+      tag: "WELCOME",
+    );
     _sliderTimer = Timer.periodic(
       Duration(seconds: _sliderIntervalSeconds),
       (_) {
@@ -681,6 +733,10 @@ class _WelcomeScreenState extends State<WelcomeScreen>
         setState(() {
           currentIndex = (currentIndex + 1) % banners.length;
         });
+        kioskLog(
+          "slider tick index=$currentIndex url=${_safeLogUrl(banners[currentIndex])}",
+          tag: "WELCOME",
+        );
       },
     );
   }
@@ -697,6 +753,7 @@ class _WelcomeScreenState extends State<WelcomeScreen>
   void _handleMediaRefreshTick() {
     if (!mounted) return;
     _mediaRefreshKey = KioskMemoryService.instance.mediaRefreshTick.value;
+    kioskLog("media refresh key=$_mediaRefreshKey", tag: "WELCOME");
     setState(() {});
   }
 
@@ -1155,8 +1212,13 @@ class _WelcomeScreenState extends State<WelcomeScreen>
   }) {
     final hasBanner = bannerUrl.trim().isNotEmpty;
     if (!hasBanner) {
+      kioskLog("background fallback reason=no_banner", tag: "WELCOME");
       return _brandedFallbackBackground(isTablet: isTablet);
     }
+    kioskLog(
+      "background render key=$_mediaRefreshKey index=$currentIndex url=${_safeLogUrl(bannerUrl)}",
+      tag: "WELCOME",
+    );
 
     return AnimatedSwitcher(
       duration: const Duration(milliseconds: 900),
@@ -1173,6 +1235,7 @@ class _WelcomeScreenState extends State<WelcomeScreen>
         cacheWidth: bannerCacheWidth,
         cacheHeight: bannerCacheHeight,
         fallback: _brandedFallbackBackground(isTablet: isTablet),
+        debugLabel: "welcome-background index=$currentIndex",
       ),
     );
   }
