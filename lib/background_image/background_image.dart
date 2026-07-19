@@ -129,6 +129,8 @@ class _WelcomeScreenState extends State<WelcomeScreen>
       final cachedPrimaryColor = _parseHexColor(
         prefs.getString("restaurant_primary_color"),
       );
+      final cachedShowDineIn = prefs.getBool("welcome_show_dine_in");
+      final cachedShowPickup = prefs.getBool("welcome_show_pickup");
       final cachedBanners = <String>{
         ...cachedSlides,
         if (isSupportedRasterImageUrl(cachedBackground)) cachedBackground,
@@ -138,7 +140,7 @@ class _WelcomeScreenState extends State<WelcomeScreen>
           cachedBanners.isNotEmpty;
 
       kioskLog(
-        "cache warm-start has=$hasCachedData name=${cachedName ?? '-'} banners=${cachedBanners.length} first=${cachedBanners.isEmpty ? '-' : _safeLogUrl(cachedBanners.first)} logo=${isSupportedRasterImageUrl(cachedLogo) ? _safeLogUrl(cachedLogo) : '-'}",
+        "cache warm-start has=$hasCachedData name=${cachedName ?? '-'} banners=${cachedBanners.length} first=${cachedBanners.isEmpty ? '-' : _safeLogUrl(cachedBanners.first)} logo=${isSupportedRasterImageUrl(cachedLogo) ? _safeLogUrl(cachedLogo) : '-'} dine=${cachedShowDineIn ?? '-'} pickup=${cachedShowPickup ?? '-'}",
         tag: "WELCOME",
       );
       if (!mounted || !hasCachedData) return;
@@ -152,6 +154,8 @@ class _WelcomeScreenState extends State<WelcomeScreen>
           banners = cachedBanners;
           currentIndex = 0;
         }
+        _showDineIn = cachedShowDineIn ?? _showDineIn;
+        _showPickup = cachedShowPickup ?? _showPickup;
         isLoading = false;
         hasError = false;
         _restaurantClosed = false;
@@ -314,6 +318,10 @@ class _WelcomeScreenState extends State<WelcomeScreen>
         restaurant: restaurant is Map ? restaurant : null,
         kioskSettings: kioskSettings is Map ? kioskSettings : null,
       );
+      final showDineIn = types["dine_in"] ?? true;
+      final showPickup = types["pickup"] ?? true;
+      await prefs.setBool("welcome_show_dine_in", showDineIn);
+      await prefs.setBool("welcome_show_pickup", showPickup);
       final sliderIntervalSeconds = _resolveSliderIntervalSeconds(
         root: res.data is Map ? res.data : null,
         restaurant: restaurant is Map ? restaurant : null,
@@ -333,8 +341,8 @@ class _WelcomeScreenState extends State<WelcomeScreen>
         currentIndex =
             tempBanners.isEmpty ? 0 : currentIndex % tempBanners.length;
         _sliderIntervalSeconds = sliderIntervalSeconds;
-        _showDineIn = types["dine_in"] ?? true;
-        _showPickup = types["pickup"] ?? true;
+        _showDineIn = showDineIn;
+        _showPickup = showPickup;
         _restaurantClosed = false;
         _restaurantClosedMessage = null;
         isLoading = false;
