@@ -82,7 +82,9 @@ class _PaymentScreenState extends State<PaymentScreen>
   static const int _failAutoCloseSeconds = 3;
   static const Duration _normalPaymentPollDelay = Duration(seconds: 4);
   static const Duration _firstPaymentPollDelay = Duration(seconds: 2);
+  static const Duration _paymentGracePollDelay = Duration(seconds: 3);
   static const Duration _maxPaymentPollDelay = Duration(seconds: 30);
+  static const int _paymentConfirmGraceSeconds = 30;
   int _failSeconds = _failAutoCloseSeconds;
 
   bool loading = true;
@@ -104,7 +106,11 @@ class _PaymentScreenState extends State<PaymentScreen>
   Timer? paymentTimer;
   Timer? timeoutTimer;
   Timer? _paymentFailTimer;
+  Timer? _paymentGraceTimer;
   bool _paymentCompleted = false;
+  bool _inPaymentGrace = false;
+  bool _finishingPaymentGrace = false;
+  bool _handlingPaymentFailure = false;
   int _paymentPollFailures = 0;
 
   @override
@@ -234,13 +240,7 @@ class _PaymentScreenState extends State<PaymentScreen>
                         ),
                         onPressed: () {
                           Navigator.pop(dialogContext);
-                          Navigator.pushAndRemoveUntil(
-                            context,
-                            MaterialPageRoute(
-                              builder: (_) => const WelcomeScreen(),
-                            ),
-                            (route) => false,
-                          );
+                          unawaited(_cancelPaymentAndReturnToStart());
                         },
                         child: Text(
                           "YES, CANCEL",
@@ -329,6 +329,10 @@ class _PaymentScreenState extends State<PaymentScreen>
         paymentPayload = qrRes.data;
         qrData = _extractQrString(paymentPayload);
       }
+      final timeoutSeconds = _extractPaymentTimeoutSeconds(paymentPayload);
+      if (timeoutSeconds != null) {
+        _setPaymentTimeout(timeoutSeconds);
+      }
       kioskLog(
         "QR value kind=${_qrValueKind(qrData)} length=${qrData?.length ?? 0} prefix=${_qrPrefix(qrData)}",
         tag: "PAYMENT",
@@ -344,6 +348,45 @@ class _PaymentScreenState extends State<PaymentScreen>
     } catch (e) {
       _handleError(e.toString());
     }
+  }
+
+  void _setPaymentTimeout(int seconds) {
+    final clamped = seconds.clamp(30, 900);
+    _remainingSeconds = clamped;
+    _remainingSecondsNotifier.value = clamped;
+    _startTimeout();
+  }
+
+  int? _extractPaymentTimeoutSeconds(dynamic payload) {
+    const keys = [
+      "timeout_seconds",
+      "timeoutSeconds",
+      "payment_qr_timeout_seconds",
+      "paymentQrTimeoutSeconds",
+    ];
+
+    int? read(dynamic value, int depth) {
+      if (value == null || depth <= 0) return null;
+      if (value is Map) {
+        for (final key in keys) {
+          if (!value.containsKey(key)) continue;
+          final parsed = int.tryParse(value[key]?.toString() ?? "");
+          if (parsed != null && parsed > 0) return parsed;
+        }
+        for (final entry in value.entries) {
+          final found = read(entry.value, depth - 1);
+          if (found != null) return found;
+        }
+      } else if (value is Iterable) {
+        for (final item in value) {
+          final found = read(item, depth - 1);
+          if (found != null) return found;
+        }
+      }
+      return null;
+    }
+
+    return read(payload, 5);
   }
 
   String? _extractQrString(dynamic payload) {
@@ -601,14 +644,22 @@ class _PaymentScreenState extends State<PaymentScreen>
         tag: "PAYMENT",
       );
 
-      if (_isPaidStatus(status)) {
+      if (_isPaidStatus(status) || _payloadFlag(res.data, const ["paid"])) {
         paymentTimer?.cancel();
         await _handlePaymentSuccess();
+      } else if (_isTimedOutStatus(status) ||
+          _payloadFlag(res.data, const ["timed_out", "timedOut", "timeout"])) {
+        _startPaymentGracePeriod();
       } else if (_isFailedStatus(status)) {
-        _handleError("Payment ${status?.replaceAll('_', ' ') ?? 'failed'}");
+        await _handlePaymentFailure(
+          "Payment ${status?.replaceAll('_', ' ') ?? 'failed'}",
+          cancelReason: _cancelReasonForStatus(status),
+        );
       } else {
         _paymentPollFailures = 0;
-        _schedulePaymentPoll(_normalPaymentPollDelay);
+        _schedulePaymentPoll(
+          _inPaymentGrace ? _paymentGracePollDelay : _normalPaymentPollDelay,
+        );
       }
     } catch (e, stackTrace) {
       if (_isRateLimitError(e)) {
@@ -630,10 +681,51 @@ class _PaymentScreenState extends State<PaymentScreen>
         error: e,
         stackTrace: stackTrace,
       );
-      _schedulePaymentPoll(Duration(seconds: backoffSeconds));
+      _schedulePaymentPoll(
+        _inPaymentGrace
+            ? _paymentGracePollDelay
+            : Duration(seconds: backoffSeconds),
+      );
     } finally {
       _pollingPayment = false;
     }
+  }
+
+  bool _payloadFlag(dynamic payload, List<String> keys) {
+    bool? readBool(dynamic value) {
+      if (value is bool) return value;
+      if (value is num) return value != 0;
+      final text = value?.toString().trim().toLowerCase();
+      if (text == null || text.isEmpty) return null;
+      if (const {"1", "true", "yes", "y", "paid", "success"}.contains(text)) {
+        return true;
+      }
+      if (const {"0", "false", "no", "n", "pending", "unpaid"}.contains(text)) {
+        return false;
+      }
+      return null;
+    }
+
+    bool find(dynamic value, int depth) {
+      if (value == null || depth <= 0) return false;
+      if (value is Map) {
+        for (final key in keys) {
+          if (!value.containsKey(key)) continue;
+          final parsed = readBool(value[key]);
+          if (parsed == true) return true;
+        }
+        for (final entry in value.entries) {
+          if (find(entry.value, depth - 1)) return true;
+        }
+      } else if (value is Iterable) {
+        for (final item in value) {
+          if (find(item, depth - 1)) return true;
+        }
+      }
+      return false;
+    }
+
+    return find(payload, 5);
   }
 
   String? _extractPaymentStatus(dynamic payload) {
@@ -718,10 +810,23 @@ class _PaymentScreenState extends State<PaymentScreen>
         status == "failure" ||
         status == "cancelled" ||
         status == "canceled" ||
-        status == "expired" ||
-        status == "timeout" ||
-        status == "timed_out" ||
         status == "declined";
+  }
+
+  bool _isTimedOutStatus(String? status) {
+    if (status == null) return false;
+    return status == "expired" || status == "timeout" || status == "timed_out";
+  }
+
+  String _cancelReasonForStatus(String? status) {
+    if (_isTimedOutStatus(status)) return "timeout";
+    if (status == "declined" || status == "failed" || status == "failure") {
+      return "declined";
+    }
+    if (status == "cancelled" || status == "canceled") {
+      return "cancelled_by_user";
+    }
+    return "error";
   }
 
   String? _extractTransactionId(dynamic payload) {
@@ -852,6 +957,7 @@ class _PaymentScreenState extends State<PaymentScreen>
     countdownTimer?.cancel();
     timeoutTimer?.cancel();
     _paymentFailTimer?.cancel();
+    _paymentGraceTimer?.cancel();
     paymentTimer?.cancel();
 
     if (!_active || !mounted) return;
@@ -863,16 +969,148 @@ class _PaymentScreenState extends State<PaymentScreen>
   }
 
   void _handleError(String msg) {
+    unawaited(_handlePaymentFailure(msg, cancelReason: "error"));
+  }
+
+  Future<void> _handlePaymentFailure(
+    String msg, {
+    required String cancelReason,
+    bool verifyBeforeFailure = true,
+  }) async {
+    if (_paymentCompleted || _handlingPaymentFailure) return;
+    _handlingPaymentFailure = true;
     paymentTimer?.cancel();
     countdownTimer?.cancel();
+    timeoutTimer?.cancel();
+    _paymentGraceTimer?.cancel();
     _paymentFailTimer?.cancel();
+
+    if (verifyBeforeFailure && await _tryResolveFinalPaymentStatus()) {
+      _handlingPaymentFailure = false;
+      return;
+    }
+
+    final cancelPayload = await _cancelUnpaidOrder(cancelReason);
+    if (_payloadFlag(cancelPayload, const ["paid", "success"])) {
+      _capturePaymentPayload(cancelPayload);
+      _handlingPaymentFailure = false;
+      await _handlePaymentSuccess();
+      return;
+    }
+
     if (_active && mounted) {
       setState(() {
         loading = false;
         errorMessage = msg;
       });
     }
+    _handlingPaymentFailure = false;
     _startFailAutoClose();
+  }
+
+  Future<bool> _tryResolveFinalPaymentStatus() async {
+    final id = orderId;
+    if (id == null) return false;
+    try {
+      final res = await KioskApi().checkPayment(id);
+      _capturePaymentPayload(res.data);
+      final status = _extractPaymentStatus(res.data);
+      if (_isPaidStatus(status) || _payloadFlag(res.data, const ["paid"])) {
+        await _handlePaymentSuccess();
+        return true;
+      }
+    } catch (e, stackTrace) {
+      kioskLogError(
+        "Final payment status check failed order=${orderNumber ?? id}",
+        tag: "PAYMENT",
+        error: e,
+        stackTrace: stackTrace,
+      );
+    }
+    return false;
+  }
+
+  Future<dynamic> _cancelUnpaidOrder(String reason) async {
+    final id = orderId;
+    if (id == null) return null;
+    try {
+      final res = await KioskApi().cancelUnpaidOrder(
+        orderId: id,
+        orderNumber: orderNumber,
+        reason: reason,
+      );
+      _capturePaymentPayload(res.data);
+      kioskLog(
+        "Cancel unpaid order=${orderNumber ?? id} reason=$reason body=${res.data}",
+        tag: "PAYMENT",
+      );
+      return res.data;
+    } catch (e, stackTrace) {
+      kioskLogError(
+        "Cancel unpaid order failed order=${orderNumber ?? id} reason=$reason",
+        tag: "PAYMENT",
+        error: e,
+        stackTrace: stackTrace,
+      );
+      return null;
+    }
+  }
+
+  void _capturePaymentPayload(dynamic payload) {
+    _transactionId ??= _extractTransactionId(payload);
+    _orderDate ??= _extractOrderDate(payload);
+    orderNumber ??= _extractOrderNumber(payload);
+  }
+
+  void _startPaymentGracePeriod() {
+    if (!_active || !mounted || _paymentCompleted || _inPaymentGrace) return;
+    countdownTimer?.cancel();
+    timeoutTimer?.cancel();
+    _inPaymentGrace = true;
+    _remainingSeconds = 0;
+    _remainingSecondsNotifier.value = 0;
+    if (mounted) {
+      setState(() => loading = false);
+    }
+    _schedulePaymentPoll(_paymentGracePollDelay);
+    _paymentGraceTimer?.cancel();
+    _paymentGraceTimer = Timer(
+      const Duration(seconds: _paymentConfirmGraceSeconds),
+      () => unawaited(_finishPaymentGracePeriod()),
+    );
+  }
+
+  Future<void> _finishPaymentGracePeriod() async {
+    if (!_active || !mounted || _paymentCompleted || _finishingPaymentGrace) {
+      return;
+    }
+    _finishingPaymentGrace = true;
+    if (await _tryResolveFinalPaymentStatus()) return;
+    await _handlePaymentFailure(
+      "Payment timed out",
+      cancelReason: "timeout",
+      verifyBeforeFailure: false,
+    );
+  }
+
+  Future<void> _cancelPaymentAndReturnToStart() async {
+    paymentTimer?.cancel();
+    countdownTimer?.cancel();
+    timeoutTimer?.cancel();
+    _paymentGraceTimer?.cancel();
+
+    final cancelPayload = await _cancelUnpaidOrder("cancelled_by_user");
+    if (_payloadFlag(cancelPayload, const ["paid", "success"])) {
+      await _handlePaymentSuccess();
+      return;
+    }
+
+    if (!_active || !mounted) return;
+    Navigator.pushAndRemoveUntil(
+      context,
+      MaterialPageRoute(builder: (_) => const WelcomeScreen()),
+      (route) => false,
+    );
   }
 
   void _startCountdown() {
@@ -882,7 +1120,7 @@ class _PaymentScreenState extends State<PaymentScreen>
       if (_remainingSeconds <= 0) {
         timer.cancel();
         if (errorMessage == null) {
-          _handleError("Payment timed out");
+          _startPaymentGracePeriod();
         }
       } else {
         _remainingSeconds--;
@@ -897,7 +1135,7 @@ class _PaymentScreenState extends State<PaymentScreen>
       Duration(seconds: _remainingSeconds),
       () {
         if (!_active || !mounted) return;
-        _handleError("Payment timed out");
+        _startPaymentGracePeriod();
       },
     );
   }
@@ -955,6 +1193,7 @@ class _PaymentScreenState extends State<PaymentScreen>
     timeoutTimer?.cancel();
     countdownTimer?.cancel();
     _paymentFailTimer?.cancel();
+    _paymentGraceTimer?.cancel();
     _remainingSecondsNotifier.dispose();
     _failSecondsNotifier.dispose();
     _failProgressNotifier.dispose();
@@ -1077,37 +1316,49 @@ class _PaymentScreenState extends State<PaymentScreen>
                 ),
               ),
               const SizedBox(width: 14),
-              ValueListenableBuilder<int>(
-                valueListenable: _remainingSecondsNotifier,
-                builder: (_, seconds, __) => RichText(
-                  text: TextSpan(
-                    style: const TextStyle(
-                      fontSize: 22,
-                      fontWeight: FontWeight.w800,
+              if (_inPaymentGrace)
+                const Text(
+                  "Confirming Payment",
+                  style: TextStyle(
+                    fontSize: 22,
+                    fontWeight: FontWeight.w800,
+                    color: Colors.orange,
+                  ),
+                )
+              else
+                ValueListenableBuilder<int>(
+                  valueListenable: _remainingSecondsNotifier,
+                  builder: (_, seconds, __) => RichText(
+                    text: TextSpan(
+                      style: const TextStyle(
+                        fontSize: 22,
+                        fontWeight: FontWeight.w800,
+                      ),
+                      children: [
+                        TextSpan(
+                          text: "$seconds ",
+                          style: const TextStyle(color: Colors.orange),
+                        ),
+                        const TextSpan(
+                          text: "Seconds",
+                          style: TextStyle(color: Colors.black),
+                        ),
+                      ],
                     ),
-                    children: [
-                      TextSpan(
-                        text: "$seconds ",
-                        style: const TextStyle(color: Colors.orange),
-                      ),
-                      const TextSpan(
-                        text: "Seconds",
-                        style: TextStyle(color: Colors.black),
-                      ),
-                    ],
                   ),
                 ),
-              ),
             ],
           ),
 
           const SizedBox(height: 6),
 
           // 🧾 SUBTEXT
-          const Text(
-            "remaining to complete Payment",
+          Text(
+            _inPaymentGrace
+                ? "Please wait while we confirm with the bank"
+                : "remaining to complete Payment",
             textAlign: TextAlign.center,
-            style: TextStyle(
+            style: const TextStyle(
               color: Colors.black87,
               fontSize: 14,
               fontWeight: FontWeight.w500,

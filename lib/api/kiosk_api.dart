@@ -393,6 +393,32 @@ class KioskApi {
     return _copyResponse(res, _normalizePaymentStatus(res.data));
   }
 
+  Future<Response> cancelUnpaidOrder({
+    required int orderId,
+    String? orderNumber,
+    String reason = "cancelled_by_user",
+  }) async {
+    final dio = await DioClient.getAuthedDio();
+    final normalizedOrderNumber = orderNumber?.trim();
+    final orderRef = normalizedOrderNumber != null &&
+            normalizedOrderNumber.isNotEmpty &&
+            normalizedOrderNumber.toLowerCase() != "null"
+        ? normalizedOrderNumber
+        : _resolveOrderNumber(orderId);
+    final res = await dio.post(
+      "kiosk/orders/$orderRef/cancel",
+      data: {"reason": reason},
+      options: Options(
+        connectTimeout: const Duration(seconds: 4),
+        receiveTimeout: const Duration(seconds: 6),
+        sendTimeout: const Duration(seconds: 4),
+        extra: const {"no_retry": true},
+      ),
+    );
+    _throwForBadStatus(res);
+    return _copyResponse(res, _normalizePaymentStatus(res.data));
+  }
+
   // =========================================================
   // GET ORDER DETAILS
   // =========================================================
@@ -1051,6 +1077,18 @@ class KioskApi {
         _readBool(payment, const ["paid", "success"]) ??
         _readBool(transaction, const ["paid", "success"]) ??
         false;
+    final failed = _readBool(source, const ["failed", "failure", "declined"]) ??
+        _readBool(payment, const ["failed", "failure", "declined"]) ??
+        _readBool(transaction, const ["failed", "failure", "declined"]) ??
+        false;
+    final timedOut =
+        _readBool(source, const ["timed_out", "timedOut", "timeout"]) ??
+            _readBool(payment, const ["timed_out", "timedOut", "timeout"]) ??
+            _readBool(
+              transaction,
+              const ["timed_out", "timedOut", "timeout"],
+            ) ??
+            false;
     final status = source["payment_status"] ??
         source["paymentStatus"] ??
         payment["payment_status"] ??
@@ -1061,19 +1099,34 @@ class KioskApi {
         order["payment_status"] ??
         payment["status"] ??
         source["status"] ??
-        (paid ? "paid" : "pending");
+        (paid
+            ? "paid"
+            : failed
+                ? "failed"
+                : timedOut
+                    ? "timed_out"
+                    : "pending");
     return {
       ...root,
       ...source,
       "status": status,
       "payment_status": status,
+      "paid": paid,
+      "failed": failed,
+      "timed_out": timedOut,
       "order": {
         ...order,
         "payment_status": status,
+        "paid": paid,
+        "failed": failed,
+        "timed_out": timedOut,
       },
       "payment": {
         ...payment,
         "payment_status": status,
+        "paid": paid,
+        "failed": failed,
+        "timed_out": timedOut,
       },
     };
   }
