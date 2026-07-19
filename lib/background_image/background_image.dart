@@ -66,6 +66,7 @@ class _WelcomeScreenState extends State<WelcomeScreen>
       WidgetsBinding.instance.addObserver(this);
     }
 
+    unawaited(_loadCachedWelcome());
     _loadRestaurant();
 
     _restaurantInfoListener = _handleRestaurantInfoUpdated;
@@ -106,6 +107,58 @@ class _WelcomeScreenState extends State<WelcomeScreen>
       _sliderTimer?.cancel();
     } else if (state == AppLifecycleState.resumed) {
       _startSlider();
+    }
+  }
+
+  Future<void> _loadCachedWelcome() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final cachedName = _storedDisplayName(prefs);
+      final cachedLogo = normalizeImageUrl(
+        prefs.getString("restaurant_logo_url"),
+      );
+      final cachedBackground = normalizeImageUrl(
+        prefs.getString("home_background_url") ??
+            prefs.getString("home_banner_url"),
+      );
+      final cachedPrimaryColor = _parseHexColor(
+        prefs.getString("restaurant_primary_color"),
+      );
+      final cachedBanners = <String>[
+        if (isSupportedRasterImageUrl(cachedBackground)) cachedBackground,
+      ];
+      final hasCachedData = cachedName != null ||
+          isSupportedRasterImageUrl(cachedLogo) ||
+          cachedBanners.isNotEmpty;
+
+      kioskLog(
+        "cache warm-start has=$hasCachedData name=${cachedName ?? '-'} banner=${cachedBanners.isEmpty ? '-' : _safeLogUrl(cachedBanners.first)} logo=${isSupportedRasterImageUrl(cachedLogo) ? _safeLogUrl(cachedLogo) : '-'}",
+        tag: "WELCOME",
+      );
+      if (!mounted || !hasCachedData) return;
+
+      setState(() {
+        restaurantName = cachedName ?? restaurantName;
+        restaurantLogoUrl =
+            isSupportedRasterImageUrl(cachedLogo) ? cachedLogo : null;
+        restaurantPrimaryColor = cachedPrimaryColor ?? restaurantPrimaryColor;
+        if (cachedBanners.isNotEmpty && banners.isEmpty) {
+          banners = cachedBanners;
+          currentIndex = 0;
+        }
+        isLoading = false;
+        hasError = false;
+        _restaurantClosed = false;
+        _restaurantClosedMessage = null;
+        _errorDetails = null;
+      });
+    } catch (e, stackTrace) {
+      kioskLogError(
+        "cache warm-start failed",
+        tag: "WELCOME",
+        error: e,
+        stackTrace: stackTrace,
+      );
     }
   }
 
