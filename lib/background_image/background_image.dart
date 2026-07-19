@@ -121,18 +121,24 @@ class _WelcomeScreenState extends State<WelcomeScreen>
         prefs.getString("home_background_url") ??
             prefs.getString("home_banner_url"),
       );
+      final cachedSlides =
+          (prefs.getStringList("home_background_urls") ?? const <String>[])
+              .map(normalizeImageUrl)
+              .where(isSupportedRasterImageUrl)
+              .toList();
       final cachedPrimaryColor = _parseHexColor(
         prefs.getString("restaurant_primary_color"),
       );
-      final cachedBanners = <String>[
+      final cachedBanners = <String>{
+        ...cachedSlides,
         if (isSupportedRasterImageUrl(cachedBackground)) cachedBackground,
-      ];
+      }.toList();
       final hasCachedData = cachedName != null ||
           isSupportedRasterImageUrl(cachedLogo) ||
           cachedBanners.isNotEmpty;
 
       kioskLog(
-        "cache warm-start has=$hasCachedData name=${cachedName ?? '-'} banner=${cachedBanners.isEmpty ? '-' : _safeLogUrl(cachedBanners.first)} logo=${isSupportedRasterImageUrl(cachedLogo) ? _safeLogUrl(cachedLogo) : '-'}",
+        "cache warm-start has=$hasCachedData name=${cachedName ?? '-'} banners=${cachedBanners.length} first=${cachedBanners.isEmpty ? '-' : _safeLogUrl(cachedBanners.first)} logo=${isSupportedRasterImageUrl(cachedLogo) ? _safeLogUrl(cachedLogo) : '-'}",
         tag: "WELCOME",
       );
       if (!mounted || !hasCachedData) return;
@@ -289,6 +295,16 @@ class _WelcomeScreenState extends State<WelcomeScreen>
             break;
           }
         }
+      }
+
+      if (tempBanners.isNotEmpty) {
+        await prefs.setStringList("home_background_urls", tempBanners);
+        await prefs.setString("home_background_url", tempBanners.first);
+        await prefs.setString("home_banner_url", tempBanners.first);
+        kioskLog(
+          "load#$loadId cached slides count=${tempBanners.length} first=${_safeLogUrl(tempBanners.first)}",
+          tag: "WELCOME",
+        );
       }
 
       if (!mounted) return;

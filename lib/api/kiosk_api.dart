@@ -385,7 +385,6 @@ class KioskApi {
       options: Options(
         connectTimeout: const Duration(seconds: 4),
         receiveTimeout: const Duration(seconds: 5),
-        sendTimeout: const Duration(seconds: 4),
         extra: const {"no_retry": true},
       ),
     );
@@ -411,7 +410,6 @@ class KioskApi {
       options: Options(
         connectTimeout: const Duration(seconds: 4),
         receiveTimeout: const Duration(seconds: 6),
-        sendTimeout: const Duration(seconds: 4),
         extra: const {"no_retry": true},
       ),
     );
@@ -473,7 +471,6 @@ class KioskApi {
       options: Options(
         connectTimeout: const Duration(seconds: 4),
         receiveTimeout: const Duration(seconds: 6),
-        sendTimeout: const Duration(seconds: 4),
         extra: const {"no_retry": true},
       ),
     );
@@ -492,7 +489,6 @@ class KioskApi {
       options: Options(
         connectTimeout: const Duration(seconds: 4),
         receiveTimeout: const Duration(seconds: 6),
-        sendTimeout: const Duration(seconds: 4),
         extra: const {"no_retry": true},
       ),
     );
