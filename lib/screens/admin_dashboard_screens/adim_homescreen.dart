@@ -23,18 +23,28 @@ class _AdminHomeScreenState extends State<AdminHomeScreen> {
 
   bool _badgeLoading = false;
 
-  late List<Widget> pages;
+  late final List<Widget?> _pages;
 
   @override
   void initState() {
     super.initState();
-    pages = [
-      const DashboardTab(),
-      const CategoriesScreen(),
-      ProductsTab(onProductsUpdated: () {}),
-      const OrdersHistoryTab(),
-      const SettingsScreen(),
-    ];
+    _pages = List<Widget?>.filled(5, null);
+    _pages[0] = const DashboardTab();
+  }
+
+  Widget _pageFor(int pageIndex) {
+    final existing = _pages[pageIndex];
+    if (existing != null) return existing;
+    final created = switch (pageIndex) {
+      0 => const DashboardTab(),
+      1 => const CategoriesScreen(),
+      2 => ProductsTab(onProductsUpdated: () {}),
+      3 => const OrdersHistoryTab(),
+      4 => const SettingsScreen(),
+      _ => const SizedBox.shrink(),
+    };
+    _pages[pageIndex] = created;
+    return created;
   }
 
   Future<void> _refreshBadge() async {
@@ -58,7 +68,13 @@ class _AdminHomeScreenState extends State<AdminHomeScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      body: IndexedStack(index: index, children: pages),
+      body: IndexedStack(
+        index: index,
+        children: List.generate(
+          _pages.length,
+          (pageIndex) => _pages[pageIndex] ?? const SizedBox.shrink(),
+        ),
+      ),
       bottomNavigationBar: _buildBottomBar(),
     );
   }
@@ -88,7 +104,10 @@ class _AdminHomeScreenState extends State<AdminHomeScreen> {
         unselectedFontSize: 12,
         selectedIconTheme: const IconThemeData(size: 26),
         unselectedIconTheme: const IconThemeData(size: 24),
-        onTap: (i) => setState(() => index = i),
+        onTap: (i) => setState(() {
+          index = i;
+          _pageFor(i);
+        }),
         items: [
           const BottomNavigationBarItem(
             icon: Icon(Icons.dashboard_outlined),

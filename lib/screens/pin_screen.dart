@@ -60,7 +60,27 @@ class _PinScreenState extends State<PinScreen> {
 
       // ✅ GO TO ADMIN HOME
       navigator.pushReplacement(
-        MaterialPageRoute(builder: (_) => const AdminHomeScreen()),
+        PageRouteBuilder(
+          pageBuilder: (_, __, ___) => const AdminHomeScreen(),
+          transitionDuration: const Duration(milliseconds: 220),
+          reverseTransitionDuration: const Duration(milliseconds: 160),
+          transitionsBuilder: (_, animation, __, child) {
+            final curved = CurvedAnimation(
+              parent: animation,
+              curve: Curves.easeOutCubic,
+            );
+            return FadeTransition(
+              opacity: curved,
+              child: SlideTransition(
+                position: Tween<Offset>(
+                  begin: const Offset(0, 0.015),
+                  end: Offset.zero,
+                ).animate(curved),
+                child: child,
+              ),
+            );
+          },
+        ),
       );
     } catch (e) {
       HapticFeedback.heavyImpact();

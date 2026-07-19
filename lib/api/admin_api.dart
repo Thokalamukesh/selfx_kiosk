@@ -18,16 +18,6 @@ class AdminApi {
   }) async {
     final dio = await DioClient.getAuthedDio();
 
-    final verifyRes = await dio.post(
-      "kiosk/verify-device-password",
-      data: {"password": pin},
-    );
-    kioskLog(
-      "verify status=${verifyRes.statusCode} body=${_compactLog(verifyRes.data)}",
-      tag: "ADMIN_PIN",
-    );
-    _ensureSuccess(verifyRes);
-
     final res = await dio.post(
       "kiosk/admin/unlock",
       data: {"password": pin},

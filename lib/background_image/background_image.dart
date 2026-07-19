@@ -1346,11 +1346,10 @@ class _WelcomeScreenState extends State<WelcomeScreen>
       builder: (_) => const PinScreen(),
     );
     if (!mounted) return;
-    setState(() {
-      _openingAdmin = false;
-      isLoading = true;
-    });
-    _loadRestaurant();
+    final isCurrentRoute = ModalRoute.of(context)?.isCurrent ?? false;
+    if (!isCurrentRoute) return;
+    setState(() => _openingAdmin = false);
+    unawaited(_loadRestaurant());
   }
 
   Widget _orderPanel(bool isTablet) {
